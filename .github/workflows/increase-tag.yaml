@@ -56,7 +56,7 @@ jobs:
 
       - name: Create and push new tag
         env:
-          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           new_tag=${{ steps.increment_tag.outputs.new_tag }}
           echo "Creating new tag $new_tag"
