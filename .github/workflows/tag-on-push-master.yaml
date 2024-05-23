@@ -92,7 +92,7 @@ jobs:
         else
           commit_messages_new=$(git log --pretty=format:"- %s%n" "$latest_release"..HEAD)
         fi
-        commit_messages_latest=$(git log --pretty=format:"- %s%n" "latest"..HEAD)
+        commit_messages_latest=$(git log --pretty=format:"- %s%n" "$latest_release"..HEAD)
         echo "::set-output name=changelog_new::$commit_messages_new"
         echo "::set-output name=changelog_latest::$commit_messages_latest"
 
@@ -107,7 +107,7 @@ jobs:
           Changes since the latest release ($latest_release):
           ${{ steps.generate_changelogs.outputs.changelog_new }}
 
-          Changes in the "latest" version ($new_tag):
+          Changes in the "$latest_tag" version ($new_tag):
           ${{ steps.generate_changelogs.outputs.changelog_latest }}
         tag_name: ${{ steps.calculate_new_tag.outputs.new_tag }}
         token: ${{ secrets.GITHUB_TOKEN }}
