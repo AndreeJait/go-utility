@@ -19,8 +19,7 @@ func LoggerWitRequestID(log Logger, showLog bool) echo.MiddlewareFunc {
 			bodyCopy := new(bytes.Buffer)
 			// Read the whole body
 			_, err := io.Copy(bodyCopy, c.Request().Body)
-
-			if showLog && err != nil {
+			if showLog && err == nil {
 				go func(body *bytes.Buffer, log Logger, requestID string) {
 					var mapRequest map[string]interface{}
 					err := json.NewDecoder(bodyCopy).Decode(&mapRequest)
