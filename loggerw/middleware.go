@@ -2,9 +2,9 @@ package loggerw
 
 import (
 	"bytes"
-	"encoding/json"
 	"github.com/labstack/echo/v4"
 	"io"
+	"net/http"
 )
 
 func LoggerWitRequestID(log Logger, showLog bool) echo.MiddlewareFunc {
@@ -16,18 +16,30 @@ func LoggerWitRequestID(log Logger, showLog bool) echo.MiddlewareFunc {
 			newContext, requestID := WithRequest(ctx, r)
 			r = r.WithContext(newContext)
 
-			bodyCopy := new(bytes.Buffer)
-			// Read the whole body
-			_, err := io.Copy(bodyCopy, c.Request().Body)
-			if showLog && err == nil {
-				go func(body *bytes.Buffer, log Logger, requestID string) {
-					var mapRequest map[string]interface{}
-					err := json.NewDecoder(bodyCopy).Decode(&mapRequest)
-					if err == nil {
-						marshal, _ := json.Marshal(&mapRequest)
-						log.Infof("[%s] - %s", requestID, string(marshal))
+			if showLog {
+				// Log query parameters for GET requests
+				if r.Method == http.MethodGet {
+					queryParams := r.URL.Query()
+					log.Infof("[%s] Query Parameters: %v", requestID, queryParams)
+				}
+
+				if r.Method == http.MethodPost ||
+					r.Method == http.MethodPut ||
+					r.Method == http.MethodPatch ||
+					r.Method == http.MethodDelete {
+
+					// Read the body
+					bodyBytes, err := io.ReadAll(r.Body)
+					if err != nil {
+						return err
 					}
-				}(bodyCopy, log, requestID)
+
+					// Restore the body to its original state
+					r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+					// Log the body
+					log.Infof("[%s] request Body: %s", requestID, bodyBytes)
+				}
 			}
 
 			c.SetRequest(r)
