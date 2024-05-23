@@ -16,10 +16,7 @@ func LoggerWitRequestID(log Logger, showLog bool) echo.MiddlewareFunc {
 			newContext, requestID := WithRequest(ctx, r)
 			r = r.WithContext(newContext)
 
-			bodyCopy := new(bytes.Buffer)
-			// Read the whole body
-			_, err := io.Copy(bodyCopy, r.Body)
-			if showLog && err == nil {
+			if showLog {
 				// Log query parameters for GET requests
 				if r.Method == http.MethodGet {
 					queryParams := r.URL.Query()
