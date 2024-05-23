@@ -19,6 +19,9 @@ jobs:
     - name: Get the latest tag
       id: get_latest_tag
       run: |
+        # Fetch all tags
+        git fetch --tags
+        # Get the latest tag, or use v0.0.0 if no tags exist
         latest_tag=$(git describe --tags `git rev-list --tags --max-count=1` 2>/dev/null || echo "v0.0.0")
         echo "Latest tag: $latest_tag"
         echo "::set-output name=latest_tag::$latest_tag"
@@ -41,12 +44,26 @@ jobs:
         echo "New tag: $new_tag"
         echo "::set-output name=new_tag::$new_tag"
 
+    - name: Check if tag exists
+      id: check_tag_exists
+      run: |
+        new_tag=${{ steps.calculate_new_tag.outputs.new_tag }}
+        if git rev-parse "refs/tags/$new_tag" >/dev/null 2>&1; then
+          echo "Tag $new_tag already exists."
+          echo "::set-output name=tag_exists::true"
+        else
+          echo "Tag $new_tag does not exist."
+          echo "::set-output name=tag_exists::false"
+        fi
+
     - name: Configure Git
+      if: steps.check_tag_exists.outputs.tag_exists != 'true'
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
     - name: Create and push new tag
+      if: steps.check_tag_exists.outputs.tag_exists != 'true'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
