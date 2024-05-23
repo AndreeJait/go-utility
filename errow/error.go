@@ -10,5 +10,5 @@ type ErrorW struct {
 }
 
 func (e ErrorW) Error() string {
-	return fmt.Sprintf("[%s] - %s \n", e.Code, e.Message)
+	return fmt.Sprintf("[%d] - %s \n", e.Code, e.Message)
 }
