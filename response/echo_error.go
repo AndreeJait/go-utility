@@ -258,7 +258,9 @@ func ConvertError(err error, mapError map[errow.ErrorWCode]ErrResponseFunc) erro
 	for key, _ := range mapError {
 		arrKey = append(arrKey, int(key))
 	}
-	sort.Sort(sort.IntSlice(arrKey))
+	sort.Slice(arrKey, func(i, j int) bool {
+		return arrKey[i] > arrKey[j]
+	})
 
 	var val errow.ErrorW
 	if errors.As(err, &val) {
