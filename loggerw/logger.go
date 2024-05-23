@@ -1,6 +1,7 @@
 package loggerw
 
 import (
+	"context"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -179,4 +180,17 @@ func DefaultLog() (Logger, error) {
 		Level:     Info,
 		Formatter: TextFormatter,
 	})
+}
+
+type contextKey int
+
+const (
+	requestIDKey contextKey = iota
+)
+
+func GetRequestID(ctx context.Context) string {
+	if reqID, ok := ctx.Value(requestIDKey).(string); ok {
+		return reqID
+	}
+	return ""
 }
