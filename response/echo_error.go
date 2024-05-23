@@ -274,9 +274,10 @@ func ConvertError(err error, mapError map[errow.ErrorWCode]ErrResponseFunc) erro
 }
 
 var MapDefaultErrResponse = map[errow.ErrorWCode]ErrResponseFunc{
-	errow.ErrInternalServer.Code: ErrInternalServerError,
-	errow.ErrSessionExpired.Code: ErrSessionExpired,
-	errow.ErrForbidden.Code:      ErrForbidden,
-	errow.ErrUnauthorized.Code:   ErrUnauthorized,
-	errow.ErrBadRequest.Code:     ErrBadRequest,
+	errow.ErrInternalServer.Code:   ErrInternalServerError,
+	errow.ErrSessionExpired.Code:   ErrSessionExpired,
+	errow.ErrForbidden.Code:        ErrForbidden,
+	errow.ErrUnauthorized.Code:     ErrUnauthorized,
+	errow.ErrBadRequest.Code:       ErrBadRequest,
+	errow.ErrResourceNotFound.Code: ErrNotFound,
 }

@@ -1,9 +1,7 @@
 package jwt
 
 import (
-	"github.com/AndreeJait/go-utility/timew"
 	"github.com/golang-jwt/jwt/v4"
-	"time"
 )
 
 const (
@@ -25,11 +23,7 @@ type MyClaims[T interface{}] struct {
 	Username string `json:"username"`
 }
 
-type CreateTokenRequest[T interface{}] struct {
-	SecretToken     string
-	Identify        Identify[T]
-	ExpiredDuration time.Duration
-	ServiceName     string
-
-	TimeW timew.Time
+type CreateTokenRequest struct {
+	SecretToken string
+	Claims      jwt.Claims
 }
