@@ -3,25 +3,13 @@ package jwt
 import (
 	"github.com/AndreeJait/go-utility/errow"
 	"github.com/golang-jwt/jwt/v4"
-	"time"
 )
 
-func CreateToken[T interface{}](param CreateTokenRequest[T]) (string, time.Time, error) {
-	timeExpired := param.TimeW.Now()
-	timeExpired = timeExpired.Add(param.ExpiredDuration)
-	claims := MyClaims[T]{
-		Claims: jwt.RegisteredClaims{
-			Issuer:    param.ServiceName,
-			ExpiresAt: jwt.NewNumericDate(timeExpired),
-		},
-		UserID:   param.Identify.GetUserID(),
-		Username: param.Identify.GetUsername(),
-	}
+func CreateToken(param CreateTokenRequest) (string, error) {
 	token := jwt.NewWithClaims(
-		jwt.SigningMethodHS256, claims)
-
+		jwt.SigningMethodHS256, param.Claims)
 	tokenSigned, err := token.SignedString([]byte(param.SecretToken))
-	return tokenSigned, timeExpired, err
+	return tokenSigned, err
 }
 
 func ParseToken[T interface{}](tokenStr string, secret string) (claims jwt.MapClaims, err error) {

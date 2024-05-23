@@ -24,29 +24,27 @@ func (u *user) GetPassword() string {
 }
 
 func TestCreateToken(t *testing.T) {
-	type args[T string] struct {
-		param CreateTokenRequest[T]
+	type args struct {
+		param CreateTokenRequest
 	}
-	type testCase[T string] struct {
+	type testCase struct {
 		name    string
-		args    args[T]
+		args    args
 		want    string
 		want1   time.Time
 		wantErr bool
 	}
-	tests := []testCase[string]{
+	tests := []testCase{
 		{
 			name: "success get token",
-			args: args[string]{
-				param: CreateTokenRequest[string]{
-					SecretToken:     "andree",
-					ExpiredDuration: 1 * time.Minute,
-					TimeW: timew.New(timew.
-						LoadLocation("Asia/Jakarta")),
-					ServiceName: "testing",
-					Identify: &user{
-						ID:       "testing-Andre",
-						Username: "andree",
+			args: args{
+				param: CreateTokenRequest{
+					SecretToken: "andree",
+					Claims: MyClaims[string]{
+						Claims: jwt.RegisteredClaims{
+							Issuer:    "testing",
+							ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Minute)),
+						},
 					},
 				},
 			},
@@ -57,15 +55,12 @@ func TestCreateToken(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, got1, err := CreateToken(tt.args.param)
+			got, err := CreateToken(tt.args.param)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("CreateToken() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			fmt.Println(got)
-			if got1.Format(time.DateOnly) != tt.want1.Format(time.DateOnly) {
-				t.Errorf("CreateToken() got1 = %v, want %v", got1, tt.want1)
-			}
 		})
 	}
 }
@@ -84,15 +79,13 @@ func TestParseToken(t *testing.T) {
 
 	var secretToken = "andree"
 
-	tokenGenerate, _, _ := CreateToken[string](CreateTokenRequest[string]{
-		SecretToken:     secretToken,
-		ExpiredDuration: 1 * time.Minute,
-		TimeW: timew.New(timew.
-			LoadLocation("Asia/Jakarta")),
-		ServiceName: "testing",
-		Identify: &user{
-			ID:       "testing-Andre",
-			Username: "andree",
+	tokenGenerate, _ := CreateToken(CreateTokenRequest{
+		SecretToken: secretToken,
+		Claims: MyClaims[string]{
+			Claims: jwt.RegisteredClaims{
+				Issuer:    "testing",
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Minute)),
+			},
 		},
 	})
 	tests := []testCase[string]{
