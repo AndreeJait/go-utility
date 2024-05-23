@@ -5,6 +5,9 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
+	"net/http"
+
+	"github.com/google/uuid"
 )
 
 type (
@@ -184,6 +187,8 @@ func DefaultLog() (Logger, error) {
 
 type contextKey int
 
+var RequestIDHeader = "X-Request-ID"
+
 const (
 	requestIDKey contextKey = iota
 )
@@ -193,4 +198,20 @@ func GetRequestID(ctx context.Context) string {
 		return reqID
 	}
 	return ""
+}
+
+// getRequestID extracts the correlation ID from the HTTP request
+func getRequestID(req *http.Request) string {
+	return req.Header.Get(RequestIDHeader)
+}
+
+// WithRequest returns a context which knows the request ID and correlation ID in the given request.
+func WithRequest(ctx context.Context, req *http.Request) (context.Context, string) {
+	id := getRequestID(req)
+	if id == "" {
+		id = uuid.New().String()
+		req.Header.Set(RequestIDHeader, id)
+	}
+	ctx = context.WithValue(ctx, requestIDKey, id)
+	return ctx, id
 }

@@ -231,6 +231,12 @@ func CustomHttpErrorHandler(log loggerw.Logger,
 			err = HTTPError(errorResponse.Internal, http.StatusBadRequest, errow.ErrBadRequest.Code, errorResponse.Internal.Error())
 		}
 
+		if errors.As(err, &errorResponse) {
+			errorResponse.RequestID = loggerw.GetRequestID(c.Request().Context())
+		} else {
+			errorResponse = ErrInternalServerError(err)
+		}
+
 		if withStack {
 			if sterr, ok := errorResponse.Internal.(stackTracer); ok {
 				fmt.Printf("%+v\n", sterr.StackTrace())
