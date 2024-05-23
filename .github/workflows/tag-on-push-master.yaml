@@ -58,18 +58,6 @@ jobs:
         echo "New tag: $new_tag"
         echo "::set-output name=new_tag::$new_tag"
 
-    - name: Check if tag exists
-      id: check_tag_exists
-      run: |
-        new_tag=${{ steps.calculate_new_tag.outputs.new_tag }}
-        if git rev-parse "refs/tags/$new_tag" >/dev/null 2>&1; then
-          echo "Tag $new_tag already exists."
-          echo "::set-output name=tag_exists::true"
-        else
-          echo "Tag $new_tag does not exist."
-          echo "::set-output name=tag_exists::false"
-        fi
-
     - name: Configure Git and Create Tag
       if: steps.check_tag_exists.outputs.tag_exists != 'true'
       run: |
