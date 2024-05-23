@@ -16,23 +16,22 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v2
 
-    - name: Get the latest tag
-      id: get_latest_tag
+    - name: Get the latest release
+      id: get_latest_release
       run: |
-        git fetch --tags
-        latest_tag=$(git describe --tags `git rev-list --tags --max-count=1`)
-        echo "Latest tag: $latest_tag"
-        echo "::set-output name=latest_tag::$latest_tag"
+        latest_release=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.tag_name')
+        echo "Latest release: $latest_release"
+        echo "::set-output name=latest_release::$latest_release"
 
     - name: Calculate new tag
       id: calculate_new_tag
       run: |
-        latest_tag=${{ steps.get_latest_tag.outputs.latest_tag }}
-        if [ -z "$latest_tag" ]; then
+        latest_release=${{ steps.get_latest_release.outputs.latest_release }}
+        if [ -z "$latest_release" ]; then
           echo "No previous release found, using initial commit as base."
           new_tag="v0.0.1" # or any initial version
         else
-          version=${latest_tag#v}
+          version=${latest_release#v}
           IFS='.' read -r -a parts <<< "$version"
           major=${parts[0]}
           minor=${parts[1]}
@@ -77,24 +76,18 @@ jobs:
         new_tag=${{ steps.calculate_new_tag.outputs.new_tag }}
         git tag $new_tag
         git push origin $new_tag
-        
-        # Update the "latest" tag to point to the newly created tag
-        git tag -f latest $new_tag
-        git push -f origin latest
 
     - name: Generate Changelogs
       if: steps.check_tag_exists.outputs.tag_exists != 'true'
       id: generate_changelogs
       run: |
-        latest_release=${{ steps.get_latest_tag.outputs.latest_tag }}
+        latest_release=${{ steps.get_latest_release.outputs.latest_release }}
         if [ -z "$latest_release" ]; then
           commit_messages_new=$(git log --pretty=format:"- %s%n" --reverse HEAD)
         else
           commit_messages_new=$(git log --pretty=format:"- %s%n" "$latest_release"..HEAD)
         fi
-        commit_messages_latest=$(git log --pretty=format:"- %s%n" "$latest_release"..HEAD)
         echo "::set-output name=changelog_new::$commit_messages_new"
-        echo "::set-output name=changelog_latest::$commit_messages_latest"
 
     - name: Create Release
       if: steps.check_tag_exists.outputs.tag_exists != 'true'
@@ -106,8 +99,5 @@ jobs:
 
           Changes since the latest release ($latest_release):
           ${{ steps.generate_changelogs.outputs.changelog_new }}
-
-          Changes in the "$latest_tag" version ($new_tag):
-          ${{ steps.generate_changelogs.outputs.changelog_latest }}
         tag_name: ${{ steps.calculate_new_tag.outputs.new_tag }}
         token: ${{ secrets.GITHUB_TOKEN }}
