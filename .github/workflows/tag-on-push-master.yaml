@@ -74,14 +74,20 @@ jobs:
         new_tag=${{ steps.calculate_new_tag.outputs.new_tag }}
         git tag $new_tag
         git push origin $new_tag
+        
+        # Create the "latest" tag pointing to the latest commit
+        git tag -f latest
+        git push -f origin latest
 
-    - name: Generate Release Notes
+    - name: Generate Changelogs
       if: steps.check_tag_exists.outputs.tag_exists != 'true'
-      id: generate_release_notes
+      id: generate_changelogs
       run: |
         latest_tag=${{ steps.get_latest_tag.outputs.latest_tag }}
-        commit_messages=$(git log --pretty=format:"- %s%n" "$latest_tag"..HEAD)
-        echo "::set-output name=release_notes::$commit_messages"
+        commit_messages_new=$(git log --pretty=format:"- %s%n" "$latest_tag"..HEAD)
+        commit_messages_latest=$(git log --pretty=format:"- %s%n" "latest"..HEAD)
+        echo "::set-output name=changelog_new::$commit_messages_new"
+        echo "::set-output name=changelog_latest::$commit_messages_latest"
 
     - name: Create Release
       if: steps.check_tag_exists.outputs.tag_exists != 'true'
@@ -91,7 +97,10 @@ jobs:
         body: |
           Release created automatically by GitHub Actions.
 
-          Changes since last release:
-          ${{ steps.generate_release_notes.outputs.release_notes }}
+          Changes since last release ($latest_tag):
+          ${{ steps.generate_changelogs.outputs.changelog_new }}
+
+          Changes in the "latest" version:
+          ${{ steps.generate_changelogs.outputs.changelog_latest }}
         tag_name: ${{ steps.calculate_new_tag.outputs.new_tag }}
         token: ${{ secrets.GITHUB_TOKEN }}
