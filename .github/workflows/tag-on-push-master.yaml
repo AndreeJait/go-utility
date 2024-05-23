@@ -77,16 +77,21 @@ jobs:
 
     - name: Generate Release Notes
       if: steps.check_tag_exists.outputs.tag_exists != 'true'
-      id: release_notes
-      uses: release-drafter/release-drafter@v5
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+      id: generate_release_notes
+      run: |
+        latest_tag=${{ steps.get_latest_tag.outputs.latest_tag }}
+        commit_messages=$(git log --pretty=format:"- %s%n" "$latest_tag"..HEAD)
+        echo "::set-output name=release_notes::$commit_messages"
 
     - name: Create Release
       if: steps.check_tag_exists.outputs.tag_exists != 'true'
       uses: softprops/action-gh-release@v1
       with:
         files: '' # Add files to attach to the release
-        body: ${{ steps.release_notes.outputs.notes }}
+        body: |
+          Release created automatically by GitHub Actions.
+
+          Changes since last release:
+          ${{ steps.generate_release_notes.outputs.release_notes }}
         tag_name: ${{ steps.calculate_new_tag.outputs.new_tag }}
         token: ${{ secrets.GITHUB_TOKEN }}
