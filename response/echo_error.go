@@ -231,6 +231,12 @@ func CustomHttpErrorHandler(log loggerw.Logger,
 			err = HTTPError(errorResponse.Internal, http.StatusBadRequest, errow.ErrBadRequest.Code, errorResponse.Internal.Error())
 		}
 
+		if errors.As(err, &errorResponse) {
+			errorResponse.RequestID = loggerw.GetRequestID(c.Request().Context())
+		} else {
+			errorResponse = ErrInternalServerError(err)
+		}
+
 		if withStack {
 			if sterr, ok := errorResponse.Internal.(stackTracer); ok {
 				fmt.Printf("%+v\n", sterr.StackTrace())
@@ -252,7 +258,9 @@ func ConvertError(err error, mapError map[errow.ErrorWCode]ErrResponseFunc) erro
 	for key, _ := range mapError {
 		arrKey = append(arrKey, int(key))
 	}
-	sort.Sort(sort.IntSlice(arrKey))
+	sort.Slice(arrKey, func(i, j int) bool {
+		return arrKey[i] > arrKey[j]
+	})
 
 	var val errow.ErrorW
 	if errors.As(err, &val) {
