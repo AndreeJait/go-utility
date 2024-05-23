@@ -3,7 +3,6 @@ package loggerw
 import (
 	"encoding/json"
 	"github.com/labstack/echo/v4"
-	"io"
 )
 
 func LoggerWitRequestID(log Logger, showLog bool) echo.MiddlewareFunc {
@@ -16,14 +15,14 @@ func LoggerWitRequestID(log Logger, showLog bool) echo.MiddlewareFunc {
 			r = r.WithContext(newContext)
 
 			if showLog {
-				go func(buff io.ReadCloser, log Logger, requestID string) {
+				go func(c echo.Context, log Logger, requestID string) {
 					var mapRequest map[string]interface{}
-					err := json.NewDecoder(buff).Decode(&mapRequest)
+					err := c.Bind(&mapRequest)
 					if err == nil {
 						bytes, _ := json.Marshal(&mapRequest)
 						log.Infof("[%s] - %s", requestID, string(bytes))
 					}
-				}(c.Request().Body, log, requestID)
+				}(c, log, requestID)
 			}
 
 			c.SetRequest(r)
