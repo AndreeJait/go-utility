@@ -27,27 +27,32 @@ jobs:
       id: calculate_new_tag
       run: |
         latest_release=${{ steps.get_latest_release.outputs.latest_release }}
-        version=${latest_release#v}
-        IFS='.' read -r -a parts <<< "$version"
-        major=${parts[0]}
-        minor=${parts[1]}
-        patch=${parts[2]}
-        
-        # Increment the minor version if the patch version is 9 or greater
-        if [ "$patch" -ge 9 ]; then
-          minor=$((minor + 1))
-          patch=0
+        if [ -z "$latest_release" ]; then
+          echo "No previous release found, using initial commit as base."
+          new_tag="v0.0.1" # or any initial version
         else
-          patch=$((patch + 1))
+          version=${latest_release#v}
+          IFS='.' read -r -a parts <<< "$version"
+          major=${parts[0]}
+          minor=${parts[1]}
+          patch=${parts[2]}
+
+          # Increment the minor version if the patch version is 9 or greater
+          if [ "$patch" -ge 9 ]; then
+            minor=$((minor + 1))
+            patch=0
+          else
+            patch=$((patch + 1))
+          fi
+
+          # Increment the major version if the minor version is 10 or greater
+          if [ "$minor" -ge 10 ]; then
+            major=$((major + 1))
+            minor=0
+          fi
+
+          new_tag="v$major.$minor.$patch"
         fi
-        
-        # Increment the major version if the minor version is 10 or greater
-        if [ "$minor" -ge 10 ]; then
-          major=$((major + 1))
-          minor=0
-        fi
-        
-        new_tag="v$major.$minor.$patch"
         echo "New tag: $new_tag"
         echo "::set-output name=new_tag::$new_tag"
 
@@ -81,7 +86,11 @@ jobs:
       id: generate_changelogs
       run: |
         latest_release=${{ steps.get_latest_release.outputs.latest_release }}
-        commit_messages_new=$(git log --pretty=format:"- %s%n" "$latest_release"..HEAD)
+        if [ -z "$latest_release" ]; then
+          commit_messages_new=$(git log --pretty=format:"- %s%n" --reverse HEAD)
+        else
+          commit_messages_new=$(git log --pretty=format:"- %s%n" "$latest_release"..HEAD)
+        fi
         commit_messages_latest=$(git log --pretty=format:"- %s%n" "latest"..HEAD)
         echo "::set-output name=changelog_new::$commit_messages_new"
         echo "::set-output name=changelog_latest::$commit_messages_latest"
