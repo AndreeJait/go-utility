@@ -21,12 +21,12 @@ jobs:
       run: |
         latest_tag=$(git describe --tags `git rev-list --tags --max-count=1` 2>/dev/null || echo "v0.0.0")
         echo "Latest tag: $latest_tag"
-        echo "latest_tag=$latest_tag" >> $GITHUB_ENV
+        echo "::set-output name=latest_tag::$latest_tag"
 
     - name: Calculate new tag
       id: calculate_new_tag
       run: |
-        latest_tag=${{ env.latest_tag }}
+        latest_tag=${{ steps.get_latest_tag.outputs.latest_tag }}
         version=${latest_tag#v}
         IFS='.' read -r -a parts <<< "$version"
         major=${parts[0]}
@@ -34,8 +34,12 @@ jobs:
         patch=${parts[2]}
         patch=$((patch + 1))
         new_tag="v$major.$minor.$patch"
+        while git rev-parse "refs/tags/$new_tag" >/dev/null 2>&1; do
+          patch=$((patch + 1))
+          new_tag="v$major.$minor.$patch"
+        done
         echo "New tag: $new_tag"
-        echo "new_tag=$new_tag" >> $GITHUB_ENV
+        echo "::set-output name=new_tag::$new_tag"
 
     - name: Configure Git
       run: |
@@ -46,6 +50,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        new_tag=${{ env.new_tag }}
+        new_tag=${{ steps.calculate_new_tag.outputs.new_tag }}
         git tag $new_tag
         git push origin $new_tag
