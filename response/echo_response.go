@@ -9,10 +9,11 @@ import (
 
 // Response struct
 type Response struct {
-	Success   bool        `json:"success" example:"true"`
-	Message   string      `json:"message" example:"success"`
-	RequestID string      `json:"request_id" example:"request_id"`
-	Data      interface{} `json:"data"`
+	Success      bool        `json:"success" example:"true"`
+	Message      string      `json:"message" example:"success"`
+	RequestID    string      `json:"request_id" example:"request_id"`
+	ResponseTime int64       `json:"response_time" example:"100000"`
+	Data         interface{} `json:"data"`
 }
 
 // Data is an alias for map
