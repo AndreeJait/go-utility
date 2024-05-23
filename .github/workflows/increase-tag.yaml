@@ -18,12 +18,17 @@ jobs:
           git config --global user.name "${{ github.actor }}"
           git config --global user.email "${{ github.actor }}@users.noreply.github.com"
 
+      - name: Fetch all tags
+        run: git fetch --tags
+
       - name: Get the latest tag
         id: get_latest_tag
         run: |
-          latest_tag=$(git describe --tags `git rev-list --tags --max-count=1`)
+          # Check if there are any tags
+          latest_tag=$(git tag -l --sort=-v:refname | head -n 1)
           echo "Latest tag: $latest_tag"
           if [ -z "$latest_tag" ]; then
+            echo "No tags found. Setting initial tag to v0.0.0."
             latest_tag="v0.0.0"
           fi
           echo "::set-output name=latest_tag::$latest_tag"
@@ -50,8 +55,11 @@ jobs:
           echo "::set-output name=new_tag::$new_tag"
 
       - name: Create and push new tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           new_tag=${{ steps.increment_tag.outputs.new_tag }}
+          echo "Creating new tag $new_tag"
           git tag $new_tag
           git push origin $new_tag
 
