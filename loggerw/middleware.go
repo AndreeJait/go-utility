@@ -1,6 +1,7 @@
 package loggerw
 
 import (
+	"bytes"
 	"encoding/json"
 	"github.com/labstack/echo/v4"
 	"io"
@@ -15,15 +16,18 @@ func LoggerWitRequestID(log Logger, showLog bool) echo.MiddlewareFunc {
 			newContext, requestID := WithRequest(ctx, r)
 			r = r.WithContext(newContext)
 
-			if showLog {
-				go func(buff io.ReadCloser, log Logger, requestID string) {
+			bodyCopy := new(bytes.Buffer)
+			// Read the whole body
+			_, err := io.Copy(bodyCopy, c.Request().Body)
+			if showLog && err == nil {
+				go func(body *bytes.Buffer, log Logger, requestID string) {
 					var mapRequest map[string]interface{}
-					err := json.NewDecoder(buff).Decode(&mapRequest)
+					err := json.NewDecoder(bodyCopy).Decode(&mapRequest)
 					if err == nil {
-						bytes, _ := json.Marshal(&mapRequest)
-						log.Infof("[%s] - %s", requestID, string(bytes))
+						marshal, _ := json.Marshal(&mapRequest)
+						log.Infof("[%s] - %s", requestID, string(marshal))
 					}
-				}(c.Request().Body, log, requestID)
+				}(bodyCopy, log, requestID)
 			}
 
 			c.SetRequest(r)
