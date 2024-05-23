@@ -15,5 +15,5 @@ var (
 	ErrBadRequest       = ErrorW{Code: 400000, Message: "bad request"}
 	ErrForbidden        = ErrorW{Code: 403000, Message: "you don't have access to this resource"}
 	ErrSessionExpired   = ErrorW{Code: 440000, Message: "the client's session has expired"}
-	ErrResourceNotFound = ErrorW{}
+	ErrResourceNotFound = ErrorW{Code: 404000, Message: "resource not found"}
 )
