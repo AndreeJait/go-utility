@@ -266,7 +266,6 @@ func ConvertError(err error, mapError map[errow.ErrorWCode]ErrResponseFunc) erro
 	if errors.As(err, &val) {
 		for _, key := range arrKey {
 			if int(val.Code) >= key {
-
 				return mapError[errow.ErrorWCode(key)](val)
 			}
 		}
