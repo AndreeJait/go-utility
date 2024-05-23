@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  create_tag:
+  create_tag_and_release:
     runs-on: ubuntu-latest
 
     steps:
@@ -35,12 +35,22 @@ jobs:
         major=${parts[0]}
         minor=${parts[1]}
         patch=${parts[2]}
-        patch=$((patch + 1))
-        new_tag="v$major.$minor.$patch"
-        while git rev-parse "refs/tags/$new_tag" >/dev/null 2>&1; do
+        
+        # Increment the minor version if the patch version is 9 or greater
+        if [ "$patch" -ge 9 ]; then
+          minor=$((minor + 1))
+          patch=0
+        else
           patch=$((patch + 1))
-          new_tag="v$major.$minor.$patch"
-        done
+        fi
+        
+        # Increment the major version if the minor version is 10 or greater
+        if [ "$minor" -ge 10 ]; then
+          major=$((major + 1))
+          minor=0
+        fi
+        
+        new_tag="v$major.$minor.$patch"
         echo "New tag: $new_tag"
         echo "::set-output name=new_tag::$new_tag"
 
@@ -56,17 +66,27 @@ jobs:
           echo "::set-output name=tag_exists::false"
         fi
 
-    - name: Configure Git
+    - name: Configure Git and Create Tag
       if: steps.check_tag_exists.outputs.tag_exists != 'true'
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-
-    - name: Create and push new tag
-      if: steps.check_tag_exists.outputs.tag_exists != 'true'
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
         new_tag=${{ steps.calculate_new_tag.outputs.new_tag }}
         git tag $new_tag
         git push origin $new_tag
+
+    - name: Generate Release Notes
+      if: steps.check_tag_exists.outputs.tag_exists != 'true'
+      id: release_notes
+      uses: release-drafter/release-drafter@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create Release
+      if: steps.check_tag_exists.outputs.tag_exists != 'true'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: '' # Add files to attach to the release
+        body: ${{ steps.release_notes.outputs.notes }}
+        tag_name: ${{ steps.calculate_new_tag.outputs.new_tag }}
+        token: ${{ secrets.GITHUB_TOKEN }}
