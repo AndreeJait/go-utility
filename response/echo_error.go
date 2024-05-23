@@ -1,9 +1,14 @@
 package response
 
 import (
+	"fmt"
 	"github.com/AndreeJait/go-utility/errow"
+	"github.com/AndreeJait/go-utility/loggerw"
 	"github.com/labstack/echo/v4"
 	"net/http"
+	"sort"
+
+	validation "github.com/go-ozzo/ozzo-validation/v4"
 
 	"github.com/pkg/errors"
 )
@@ -17,6 +22,8 @@ type ErrorResponse struct {
 	RequestID string           `json:"request_id"`
 	Internal  error            `json:"-"`
 }
+
+type ErrResponseFunc func(errInner error) ErrorResponse
 
 // Error is required by the error interface.
 func (e ErrorResponse) Error() string {
@@ -195,23 +202,74 @@ func HTTPError(err error, statusCode int, errorCode errow.ErrorWCode, message st
 	}
 }
 
-func MiddlewareHandleError(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		err := next(c)
-		var val errow.ErrorW
-		if errors.As(err, &val) {
-			if val.Code >= 500000 {
-				return ErrInternalServerError(err)
-			} else if val.Code >= 440000 {
-				return ErrSessionExpired(err)
-			} else if val.Code >= 403000 {
-				return ErrForbidden(err)
-			} else if val.Code >= 401000 {
-				return ErrUnauthorized(err)
-			} else if val.Code >= 400000 {
-				return ErrBadRequest(err)
+func CustomHttpErrorHandler(log loggerw.Logger,
+	mapErrorResponse map[errow.ErrorWCode]ErrResponseFunc, withStack bool) echo.HTTPErrorHandler {
+	return func(err error, c echo.Context) {
+		var requestID = loggerw.GetRequestID(c.Request().Context())
+
+		err = ConvertError(err, mapErrorResponse)
+
+		var errorResponse ErrorResponse
+		if !errors.As(err, &errorResponse) {
+			err = ErrorResponse{
+				Success:   false,
+				HTTPCode:  http.StatusInternalServerError,
+				Message:   errow.ErrInternalServer.Message,
+				ErrorCode: errow.ErrInternalServer.Code,
+				Internal:  err,
 			}
 		}
-		return err
+		errorResponse.RequestID = requestID
+
+		// handles resource not found errors
+		if errors.Is(errorResponse.Internal, echo.ErrNotFound) {
+			err = HTTPError(errorResponse.Internal, http.StatusNotFound, errow.ErrResourceNotFound.Code, "requested endpoint is not registered")
+		}
+
+		// Handles validation error
+		if errors.As(errorResponse.Internal, &validation.Errors{}) || errors.As(errorResponse.Internal, &validation.ErrorObject{}) {
+			err = HTTPError(errorResponse.Internal, http.StatusBadRequest, errow.ErrBadRequest.Code, errorResponse.Internal.Error())
+		}
+
+		if withStack {
+			if sterr, ok := errorResponse.Internal.(stackTracer); ok {
+				fmt.Printf("%+v\n", sterr.StackTrace())
+			}
+		}
+
+		log.Error(errorResponse.Internal)
+
+		errJson := c.JSON(errorResponse.HTTPCode, errorResponse)
+		if errJson != nil {
+			log.Error(errJson)
+		}
 	}
+}
+
+func ConvertError(err error, mapError map[errow.ErrorWCode]ErrResponseFunc) error {
+
+	var arrKey []int
+	for key, _ := range mapError {
+		arrKey = append(arrKey, int(key))
+	}
+	sort.Sort(sort.IntSlice(arrKey))
+
+	var val errow.ErrorW
+	if errors.As(err, &val) {
+		for _, key := range arrKey {
+			if int(val.Code) >= key {
+
+				return mapError[errow.ErrorWCode(key)](val)
+			}
+		}
+	}
+	return err
+}
+
+var MapDefaultErrResponse = map[errow.ErrorWCode]ErrResponseFunc{
+	errow.ErrInternalServer.Code: ErrInternalServerError,
+	errow.ErrSessionExpired.Code: ErrSessionExpired,
+	errow.ErrForbidden.Code:      ErrForbidden,
+	errow.ErrUnauthorized.Code:   ErrUnauthorized,
+	errow.ErrBadRequest.Code:     ErrBadRequest,
 }
