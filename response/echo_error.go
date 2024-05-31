@@ -222,7 +222,8 @@ func CustomHttpErrorHandler(log loggerw.Logger,
 		errorResponse.RequestID = requestID
 
 		// handles resource not found errors
-		if errors.Is(errorResponse.Internal, echo.ErrNotFound) {
+		var errHTtpEcho = echo.HTTPError{}
+		if errors.As(errorResponse.Internal, &errHTtpEcho); errHTtpEcho.Code == echo.ErrNotFound.Code {
 			err = HTTPError(errorResponse.Internal, http.StatusNotFound, errow.ErrResourceNotFound.Code, "requested endpoint is not registered")
 		}
 
