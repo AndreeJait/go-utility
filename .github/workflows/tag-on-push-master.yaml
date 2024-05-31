@@ -9,43 +9,89 @@ permissions:
   contents: write
 
 jobs:
-  create_tag:
+  create_tag_and_release:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
+      with:
+        fetch-depth: 0  # Fetch all history including tags
 
-    - name: Get the latest tag
-      id: get_latest_tag
+    - name: Get the latest release
+      id: get_latest_release
       run: |
-        latest_tag=$(git describe --tags `git rev-list --tags --max-count=1` 2>/dev/null || echo "v0.0.0")
-        echo "Latest tag: $latest_tag"
-        echo "latest_tag=$latest_tag" >> $GITHUB_ENV
+        latest_release=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.tag_name')
+        echo "Latest release: $latest_release"
+        echo "::set-output name=latest_release::$latest_release"
 
     - name: Calculate new tag
       id: calculate_new_tag
       run: |
-        latest_tag=${{ env.latest_tag }}
-        version=${latest_tag#v}
-        IFS='.' read -r -a parts <<< "$version"
-        major=${parts[0]}
-        minor=${parts[1]}
-        patch=${parts[2]}
-        patch=$((patch + 1))
-        new_tag="v$major.$minor.$patch"
-        echo "New tag: $new_tag"
-        echo "new_tag=$new_tag" >> $GITHUB_ENV
+        latest_release=${{ steps.get_latest_release.outputs.latest_release }}
+        if [ -z "$latest_release" ]; then
+          echo "No previous release found, using initial commit as base."
+          new_tag="v0.0.1" # or any initial version
+        else
+          version=${latest_release#v}
+          IFS='.' read -r -a parts <<< "$version"
+          major=${parts[0]}
+          minor=${parts[1]}
+          patch=${parts[2]}
 
-    - name: Configure Git
+          # Increment the minor version if the patch version is 9 or greater
+          if [ "$patch" -ge 9 ]; then
+            minor=$((minor + 1))
+            patch=0
+          else
+            patch=$((patch + 1))
+          fi
+
+          # Increment the major version if the minor version is 10 or greater
+          if [ "$minor" -ge 10 ]; then
+            major=$((major + 1))
+            minor=0
+          fi
+
+          new_tag="v$major.$minor.$patch"
+        fi
+        echo "New tag: $new_tag"
+        echo "::set-output name=new_tag::$new_tag"
+
+    - name: Configure Git and Create Tag
+      if: steps.check_tag_exists.outputs.tag_exists != 'true'
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-
-    - name: Create and push new tag
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        new_tag=${{ env.new_tag }}
+        new_tag=${{ steps.calculate_new_tag.outputs.new_tag }}
         git tag $new_tag
         git push origin $new_tag
+
+        # Update the "latest" tag to point to the newly created tag
+        git tag -f latest $new_tag
+        git push -f origin latest
+
+    - name: Generate Changelogs
+      if: steps.check_tag_exists.outputs.tag_exists != 'true'
+      id: generate_changelogs
+      run: |
+        latest_release=${{ steps.get_latest_release.outputs.latest_release }}
+        if [ -z "$latest_release" ]; then
+          commit_messages_new=$(git log --pretty=format:"- %s%n" --reverse HEAD)
+        else
+          commit_messages_new=$(git log --pretty=format:"- %s%n" "$latest_release"..HEAD)
+        fi
+        echo "::set-output name=changelog_new::$commit_messages_new"
+
+    - name: Create Release
+      if: steps.check_tag_exists.outputs.tag_exists != 'true'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: '' # Add files to attach to the release
+        body: |
+          Release created automatically by GitHub Actions.
+
+          Changes since the latest release ($latest_release):
+          ${{ steps.generate_changelogs.outputs.changelog_new }}
+        tag_name: ${{ steps.calculate_new_tag.outputs.new_tag }}
+        token: ${{ secrets.GITHUB_TOKEN }}
