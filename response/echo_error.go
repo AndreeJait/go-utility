@@ -211,13 +211,14 @@ func CustomHttpErrorHandler(log loggerw.Logger,
 
 		var errorResponse ErrorResponse
 		if !errors.As(err, &errorResponse) {
-			err = ErrorResponse{
+			errorResponse = ErrorResponse{
 				Success:   false,
 				HTTPCode:  http.StatusInternalServerError,
 				Message:   errow.ErrInternalServer.Message,
 				ErrorCode: errow.ErrInternalServer.Code,
 				Internal:  err,
 			}
+			err = errorResponse
 		}
 		errorResponse.RequestID = requestID
 
@@ -232,11 +233,10 @@ func CustomHttpErrorHandler(log loggerw.Logger,
 			err = HTTPError(errorResponse.Internal, http.StatusBadRequest, errow.ErrBadRequest.Code, errorResponse.Internal.Error())
 		}
 
-		if errors.As(err, &errorResponse) {
-			errorResponse.RequestID = loggerw.GetRequestID(c.Request().Context())
-		} else {
+		if !errors.As(err, &errorResponse) {
 			errorResponse = ErrInternalServerError(err)
 		}
+		errorResponse.RequestID = loggerw.GetRequestID(c.Request().Context())
 
 		if withStack {
 			if sterr, ok := errorResponse.Internal.(stackTracer); ok {
