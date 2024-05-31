@@ -45,7 +45,31 @@ func (m *converter) MapToReflectValue(mapRow map[string]any, tag string, reflect
 		// Check if the tag exists in the values map
 		if value, ok := mapRow[tagValue]; ok {
 			// Set value to the field
-			field.Set(reflect.ValueOf(value))
+			if value != nil {
+				val := reflect.ValueOf(value)
+
+				if field.Kind() == reflect.Ptr {
+					if val.Kind() == reflect.Ptr {
+						// If both are pointers, just set the value
+						field.Set(val)
+					} else {
+						// If the field is a pointer but value is not, create a new pointer
+						newVal := reflect.New(field.Type().Elem())
+						if val.Type().AssignableTo(field.Type().Elem()) {
+							newVal.Elem().Set(val)
+						} else if val.Type().ConvertibleTo(field.Type().Elem()) {
+							newVal.Elem().Set(val.Convert(field.Type().Elem()))
+						}
+						field.Set(newVal)
+					}
+				} else {
+					if val.Type().AssignableTo(field.Type()) {
+						field.Set(val)
+					} else if val.Type().ConvertibleTo(field.Type()) {
+						field.Set(val.Convert(field.Type()))
+					}
+				}
+			}
 		}
 
 	}
