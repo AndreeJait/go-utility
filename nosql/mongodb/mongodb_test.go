@@ -15,7 +15,7 @@ func TestConnection(t *testing.T) {
 	}
 	t.Run("testing", func(t *testing.T) {
 		log, _ := loggerw.DefaultLog()
-		noSql, err := New("mongodb://root:andre110102@localhost:27017/", "test")
+		noSql, err := New("mongodb://user:pass@localhost:27017/", "test")
 		if err != nil {
 			log.Error(err)
 			return
