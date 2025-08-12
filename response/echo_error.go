@@ -206,7 +206,7 @@ func CustomHttpErrorHandler(log loggerw.Logger,
 	mapErrorResponse map[errow.ErrorWCode]ErrResponseFunc, withStack bool) echo.HTTPErrorHandler {
 	return func(err error, c echo.Context) {
 		var requestID = loggerw.GetRequestID(c.Request().Context())
-
+		var ctx = c.Request().Context()
 		err = ConvertError(err, mapErrorResponse)
 
 		var errorResponse ErrorResponse
@@ -243,11 +243,11 @@ func CustomHttpErrorHandler(log loggerw.Logger,
 			}
 		}
 
-		log.Error(errorResponse.Internal)
+		log.Error(ctx, errorResponse.Internal)
 
 		errJson := c.JSON(errorResponse.HTTPCode, errorResponse)
 		if errJson != nil {
-			log.Error(errJson)
+			log.Error(ctx, errJson)
 		}
 	}
 }
