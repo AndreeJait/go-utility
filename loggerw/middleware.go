@@ -2,48 +2,62 @@ package loggerw
 
 import (
 	"bytes"
-	"github.com/labstack/echo/v4"
 	"io"
 	"net/http"
+	"time"
+
+	"github.com/labstack/echo/v4"
 )
 
-func LoggerWitRequestID(log Logger, showLog bool) echo.MiddlewareFunc {
+// LoggerWithRequestID ensures/propagates X-Request-ID, attaches it to ctx,
+// echoes it back to the client, and (optionally) logs request info & body.
+func LoggerWithRequestID(log Logger, logBody bool) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-
-			ctx := c.Request().Context()
 			r := c.Request()
-			newContext, requestID := WithRequest(ctx, r)
-			r = r.WithContext(newContext)
+			w := c.Response()
 
-			if showLog {
-				// Log query parameters for GET requests
-				if r.Method == http.MethodGet {
-					queryParams := r.URL.Query()
-					log.Infof("[%s] Query Parameters: %v", requestID, queryParams)
-				}
+			// ensure request id on ctx, request header, and response header
+			ctx, rid := ensureRequestID(r.Context())
+			r = r.WithContext(ctx)
+			r.Header.Set(RequestIDHeader, rid)
+			w.Header().Set(RequestIDHeader, rid)
 
-				if r.Method == http.MethodPost ||
-					r.Method == http.MethodPut ||
-					r.Method == http.MethodPatch ||
-					r.Method == http.MethodDelete {
+			start := time.Now()
 
-					// Read the body
-					bodyBytes, err := io.ReadAll(r.Body)
-					if err != nil {
-						return err
+			var bodyCopy []byte
+			if logBody && (r.Method == http.MethodPost || r.Method == http.MethodPut ||
+				r.Method == http.MethodPatch || r.Method == http.MethodDelete) {
+				if r.Body != nil {
+					b, err := io.ReadAll(r.Body)
+					if err == nil {
+						bodyCopy = b
+					} else {
+						log.Errorf(ctx, err, "read request body failed")
 					}
-
-					// Restore the body to its original state
-					r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-					// Log the body
-					log.Infof("[%s] request Body: %s", requestID, bodyBytes)
+					r.Body = io.NopCloser(bytes.NewBuffer(b))
 				}
 			}
 
 			c.SetRequest(r)
-			return next(c)
+
+			err := next(c)
+
+			fields := Fields{
+				"status":  c.Response().Status,
+				"latency": time.Since(start).String(),
+				"method":  r.Method,
+				"path":    r.URL.Path,
+			}
+			if q := r.URL.RawQuery; q != "" {
+				fields["query"] = q
+			}
+			if logBody && len(bodyCopy) > 0 {
+				fields["body"] = string(bodyCopy)
+			}
+
+			log.With(ctx, fields).Info(ctx, "http_request")
+			return err
 		}
 	}
 }
