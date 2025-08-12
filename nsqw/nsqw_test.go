@@ -35,7 +35,7 @@ func TestNsqW(t *testing.T) {
 				}
 
 				jsonStr, _ := json.Marshal(reqMap)
-				log.Info(string(jsonStr))
+				log.Info(ctx, string(jsonStr))
 				return nil
 			},
 		})
@@ -54,7 +54,7 @@ func TestNsqW(t *testing.T) {
 				}
 
 				jsonStr, _ := json.Marshal(reqMap)
-				log.Info(string(jsonStr))
+				log.Info(ctx, string(jsonStr))
 				return nil
 			},
 		})
@@ -73,7 +73,7 @@ func TestNsqW(t *testing.T) {
 				}
 
 				jsonStr, _ := json.Marshal(reqMap)
-				log.Info(string(jsonStr))
+				log.Info(ctx, string(jsonStr))
 				return nil
 			},
 		})

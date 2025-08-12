@@ -1,6 +1,7 @@
 package gracefull
 
 import (
+	"context"
 	"errors"
 	"github.com/AndreeJait/go-utility/loggerw"
 	"testing"
@@ -43,7 +44,7 @@ func TestGracefulShutDown_ShutdownAll(t *testing.T) {
 				mapShutDownFunc: tt.fields.mapShutDownFunc,
 				log:             tt.fields.log,
 			}
-			g.ShutdownAll()
+			g.ShutdownAll(context.Background())
 		})
 	}
 }

@@ -1,6 +1,7 @@
 package refactor
 
 import (
+	"context"
 	"fmt"
 	"github.com/AndreeJait/go-utility/loggerw"
 	"os"
@@ -36,6 +37,6 @@ func DoRefactor(beforePath, afterPath string) {
 			return nil
 		})
 	if err != nil {
-		log.Println(err)
+		log.Println(context.Background(), err)
 	}
 }

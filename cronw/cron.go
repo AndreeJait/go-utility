@@ -17,8 +17,8 @@ type cronW struct {
 }
 
 func (c *cronW) Start() {
-
-	c.log.Infof("cron is started")
+	var ctx = context.Background()
+	c.log.Infof(ctx, "cron is started")
 	go c.scheduler.Start()
 
 	sigChan := make(chan os.Signal, 1)
@@ -26,21 +26,22 @@ func (c *cronW) Start() {
 	<-sigChan
 
 	c.Stop()
-	c.log.Infof("cron is stopped")
+	c.log.Infof(ctx, "cron is stopped")
 }
 
 func (c *cronW) AddHandler(param AddHandlerParam) {
+	ctx := context.Background()
 	ids, err := c.scheduler.AddFunc(param.Pattern, func() {
 		errInternal := param.Handler(context.Background())
 		if errInternal != nil {
-			c.log.Fatal(errInternal)
+			c.log.Fatal(ctx, errInternal)
 		}
 	})
 	if err != nil {
-		c.log.Fatal(err)
+		c.log.Fatal(ctx, err)
 	}
 
-	c.log.Infof("cron %s is added", param.Name)
+	c.log.Infof(ctx, "cron %s is added", param.Name)
 	c.ids = append(c.ids, ids)
 }
 

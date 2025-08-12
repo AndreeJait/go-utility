@@ -19,11 +19,12 @@ type nsqw struct {
 
 func (n *nsqw) Start() error {
 	var addresses []string
+	var ctx = context.Background()
 
 	for _, host := range n.cfg.Hosts {
 		address := fmt.Sprintf("%s:%s", host.Host, host.Port)
 		addresses = append(addresses, address)
-		n.log.Infof("address %s added\n", address)
+		n.log.Infof(ctx, "address %s added\n", address)
 	}
 
 	for _, consumer := range n.consumers {
@@ -36,7 +37,7 @@ func (n *nsqw) Start() error {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 	n.Disconnect(context.Background())
-	n.log.Infof("all instance is stopped\n")
+	n.log.Infof(ctx, "all instance is stopped\n")
 	return nil
 }
 
