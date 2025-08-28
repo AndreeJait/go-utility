@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"encoding/json"
 	"github.com/AndreeJait/go-utility/errow"
 	"github.com/golang-jwt/jwt/v4"
 )
@@ -12,7 +13,7 @@ func CreateToken(param CreateTokenRequest) (string, error) {
 	return tokenSigned, err
 }
 
-func ParseToken[T interface{}](tokenStr string, secret string) (claims jwt.MapClaims, err error) {
+func ParseToken[T interface{}](tokenStr string, secret string) (resp T, err error) {
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errow.ErrInvalidSigningMethod
@@ -22,13 +23,22 @@ func ParseToken[T interface{}](tokenStr string, secret string) (claims jwt.MapCl
 
 		return []byte(secret), nil
 	})
-
 	if err != nil {
-		return claims, err
+		return resp, err
 	}
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid {
-		return claims, errow.ErrInvalidToken
+		return resp, errow.ErrInvalidToken
 	}
-	return claims, nil
+
+	if data, ok := claims["data"]; ok {
+		b, err := json.Marshal(data)
+		if err != nil {
+			return resp, err
+		}
+		if err := json.Unmarshal(b, &resp); err != nil {
+			return resp, err
+		}
+	}
+	return resp, nil
 }
