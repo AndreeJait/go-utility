@@ -9,8 +9,8 @@ import (
 )
 
 type user struct {
-	ID       string
-	Username string
+	ID       string `json:"id"`
+	Username string `json:"username"`
 }
 
 func (u *user) GetUserID() string {
@@ -70,46 +70,50 @@ func TestParseToken(t *testing.T) {
 		tokenStr string
 		secret   string
 	}
-	type testCase[T string] struct {
-		name       string
-		args       args
-		wantClaims jwt.MapClaims
-		wantErr    bool
+	type testCase[T interface{}] struct {
+		name    string
+		args    args
+		want    T
+		wantErr bool
 	}
 
 	var secretToken = "andree"
 
 	tokenGenerate, _ := CreateToken(CreateTokenRequest{
 		SecretToken: secretToken,
-		Claims: MyClaims[string]{
+		Claims: MyClaims[user]{
+			Data: user{
+				ID:       "123",
+				Username: "andree",
+			},
 			Claims: jwt.RegisteredClaims{
 				Issuer:    "testing",
 				ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Minute)),
 			},
 		},
 	})
-	tests := []testCase[string]{
+	tests := []testCase[user]{
 		{
 			name: "success to parse token",
 			args: args{
 				tokenStr: tokenGenerate,
 				secret:   secretToken,
 			},
-			wantClaims: jwt.MapClaims{
-				KeyUsername: "andree",
-				KeyUserID:   "testing-andree",
+			want: user{
+				ID:       "123",
+				Username: "andree",
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotClaims, err := ParseToken[string](tt.args.tokenStr, tt.args.secret)
+			gotClaims, err := ParseToken[user](tt.args.tokenStr, tt.args.secret)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseToken() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if (tt.wantClaims[KeyUsername] == gotClaims[KeyUsername]) && (tt.wantClaims[KeyUserID] == gotClaims[KeyUserID]) {
-				t.Errorf("ParseToken() gotClaims = %v, want %v", gotClaims, tt.wantClaims)
+			if tt.want != gotClaims {
+				t.Errorf("ParseToken() gotClaims = %v, want %v", gotClaims, tt.want)
 			}
 		})
 	}

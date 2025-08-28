@@ -19,8 +19,7 @@ type M map[string]interface{}
 
 type MyClaims[T interface{}] struct {
 	jwt.Claims
-	UserID   T      `json:"user_id"`
-	Username string `json:"username"`
+	Data T `json:"data"`
 }
 
 type CreateTokenRequest struct {
