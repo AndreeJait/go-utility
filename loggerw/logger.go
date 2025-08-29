@@ -50,8 +50,14 @@ type (
 	Fields    map[string]any
 
 	Option struct {
-		Level                       Level
-		LogFilePath                 string
+		Level Level
+		// (legacy) if set, still works:
+		LogFilePath string
+
+		// ✅ New simpler switches
+		SaveToFile bool   // when true, write logs to FilePath
+		FilePath   string // e.g. "logs/app.log"
+
 		Formatter                   Formatter
 		MaxSize, MaxBackups, MaxAge int
 		Compress                    bool
@@ -139,41 +145,61 @@ func New(option *Option) (Logger, error) {
 	var fmtr logrus.Formatter
 	switch option.Formatter {
 	case JSONFormatter:
-		j := &logrus.JSONFormatter{
+		fmtr = &logrus.JSONFormatter{
 			TimestampFormat: option.TimestampFormat,
 			PrettyPrint:     false,
 		}
-		fmtr = j
 	default:
-		t := &logrus.TextFormatter{
+		fmtr = &logrus.TextFormatter{
 			TimestampFormat: option.TimestampFormat,
 			FullTimestamp:   true,
 			DisableQuote:    true,
 		}
-		fmtr = t
 	}
 
-	// Caller
+	// Caller + prettyfier
 	l.SetReportCaller(option.ReportCaller)
-	// Prettyfier when caller is enabled
 	fmtr = wrapCallerPrettyfier(fmtr)
 	l.SetFormatter(fmtr)
 
-	// Outputs
+	// ===== Outputs (with new SaveToFile / FilePath) =====
+	// Priority:
+	// 1) If SaveToFile is true -> use FilePath (default if empty)
+	// 2) Else if legacy LogFilePath provided -> use it
+	// 3) ConsoleAlso controls whether stdout is also used when file enabled
 	var writers []io.Writer
-	if option.LogFilePath != "" {
+	fileEnabled := false
+
+	if option.SaveToFile {
+		fileEnabled = true
+		path := option.FilePath
+		if strings.TrimSpace(path) == "" {
+			path = "app.log" // sensible default
+		}
+		writers = append(writers, &lumberjack.Logger{
+			Filename:   path,
+			MaxSize:    option.MaxSize,
+			MaxBackups: option.MaxBackups,
+			MaxAge:     option.MaxAge,
+			Compress:   option.Compress,
+			LocalTime:  true,
+		})
+	} else if option.LogFilePath != "" { // legacy path
+		fileEnabled = true
 		writers = append(writers, &lumberjack.Logger{
 			Filename:   option.LogFilePath,
 			MaxSize:    option.MaxSize,
-			MaxAge:     option.MaxAge,
 			MaxBackups: option.MaxBackups,
-			LocalTime:  true,
+			MaxAge:     option.MaxAge,
 			Compress:   option.Compress,
+			LocalTime:  true,
 		})
 	}
-	if option.ConsoleAlso || option.LogFilePath == "" {
+
+	if option.ConsoleAlso || !fileEnabled {
 		writers = append(writers, os.Stdout)
 	}
+
 	l.SetOutput(io.MultiWriter(writers...))
 
 	return &logger{
