@@ -1,11 +1,12 @@
 package response
 
 import (
-	"fmt"
+	"context"
 	"github.com/AndreeJait/go-utility/errow"
 	"github.com/AndreeJait/go-utility/loggerw"
 	"github.com/labstack/echo/v4"
 	"net/http"
+	"runtime/debug"
 	"sort"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
@@ -203,7 +204,7 @@ func HTTPError(err error, statusCode int, errorCode errow.ErrorWCode, message st
 }
 
 func CustomHttpErrorHandler(log loggerw.Logger,
-	mapErrorResponse map[errow.ErrorWCode]ErrResponseFunc, withStack bool) echo.HTTPErrorHandler {
+	mapErrorResponse map[errow.ErrorWCode]ErrResponseFunc, withStack, withStackContext bool) echo.HTTPErrorHandler {
 	return func(err error, c echo.Context) {
 		var requestID = loggerw.GetRequestID(c.Request().Context())
 		var ctx = c.Request().Context()
@@ -238,8 +239,13 @@ func CustomHttpErrorHandler(log loggerw.Logger,
 		errorResponse.RequestID = loggerw.GetRequestID(c.Request().Context())
 
 		if withStack {
-			if sterr, ok := errorResponse.Internal.(stackTracer); ok {
-				fmt.Printf("%+v\n", sterr.StackTrace())
+			if stderr, ok := errorResponse.Internal.(stackTracer); ok {
+				log.Errorf(ctx, errorResponse.Internal, "%v", stderr)
+			}
+		}
+		if withStackContext {
+			if st := GetStack(ctx); st != nil {
+				log.Infof(ctx, "Context: %v", st)
 			}
 		}
 
@@ -280,4 +286,19 @@ var MapDefaultErrResponse = map[errow.ErrorWCode]ErrResponseFunc{
 	errow.ErrUnauthorized.Code:     ErrUnauthorized,
 	errow.ErrBadRequest.Code:       ErrBadRequest,
 	errow.ErrResourceNotFound.Code: ErrNotFound,
+}
+
+type ctxKey string
+
+const stackKey ctxKey = "stacktrace"
+
+func WithStack(ctx context.Context) context.Context {
+	return context.WithValue(ctx, stackKey, debug.Stack())
+}
+
+func GetStack(ctx context.Context) []byte {
+	if v, ok := ctx.Value(stackKey).([]byte); ok {
+		return v
+	}
+	return nil
 }
