@@ -240,12 +240,12 @@ func CustomHttpErrorHandler(log loggerw.Logger,
 
 		if withStack {
 			if stderr, ok := errorResponse.Internal.(stackTracer); ok {
-				log.Errorf(ctx, errorResponse.Internal, "%v", stderr)
+				log.Errorf(ctx, errorResponse.Internal, "%s", stderr)
 			}
 		}
 		if withStackContext {
 			if st := GetStack(ctx); st != nil {
-				log.Infof(ctx, "Context: %v", st)
+				log.Infof(ctx, "Context: %s", st)
 			}
 		}
 
