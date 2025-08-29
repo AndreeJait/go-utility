@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -217,4 +218,31 @@ func shortFile(p string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// ===== helpers you already had =====
+
+func GetFuncName(fn interface{}) string {
+	if fn == nil {
+		return ""
+	}
+	val := reflect.ValueOf(fn)
+	if val.Kind() != reflect.Func {
+		return ""
+	}
+	pc := val.Pointer()
+	f := runtime.FuncForPC(pc)
+	if f == nil {
+		return ""
+	}
+	return f.Name()
+}
+
+func GetShortFuncName(fn interface{}) string {
+	full := GetFuncName(fn)
+	if full == "" {
+		return ""
+	}
+	parts := strings.Split(full, ".")
+	return parts[len(parts)-1]
 }
