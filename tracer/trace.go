@@ -5,11 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"net/http"
-	"reflect"
 	"runtime"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
@@ -17,159 +15,187 @@ type ctxKey string
 
 const (
 	ctxTraceIDKey ctxKey = "tracer.trace_id"
-	ctxSpanKey    ctxKey = "tracer.span"
+	ctxTraceKey   ctxKey = "tracer.trace"
+	ctxSpanKey    ctxKey = "tracer.current_span"
 )
 
 type LogFunc func(ctx context.Context, level, msg string, fields map[string]any)
 
-var logf LogFunc = func(ctx context.Context, level, msg string, fields map[string]any) { /* no-op by default */ }
+var logf LogFunc = func(context.Context, string, string, map[string]any) {}
 
 func SetLogger(fn LogFunc) { logf = fn }
+
+// ---------------- IDs ----------------
 
 func newTraceID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
-	x := make([]byte, 32)
-	hex.Encode(x, b[:])
-	return string(x)
-}
-func newSpanID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	x := make([]byte, 16)
-	hex.Encode(x, b[:])
-	return string(x)
+	out := make([]byte, 32)
+	hex.Encode(out, b[:])
+	return string(out)
 }
 
-func parseTraceParent(s string) (traceID, parentID string, ok bool) {
-	s = strings.TrimSpace(s)
-	p := strings.Split(s, "-")
-	if len(p) != 4 || len(p[1]) != 32 || len(p[2]) != 16 {
-		return "", "", false
-	}
-	return p[1], p[2], true
-}
-func formatTraceParent(traceID, spanID string) string {
-	return fmt.Sprintf("00-%s-%s-01", traceID, spanID)
+// ---------------- Core structs ----------------
+
+type Trace struct {
+	TraceID  string
+	Name     string
+	Start    time.Time
+	mu       sync.Mutex
+	timeline []SpanRecord
+	errCnt   int
 }
 
 type Span struct {
-	TraceID   string
-	SpanID    string
-	ParentID  string
-	Name      string
-	Start     time.Time
-	Depth     int
-	CallerFn  string
-	CallerPos string // file:line
-	Fields    map[string]any
-	ended     int32
+	t      *Trace
+	Name   string
+	Depth  int
+	Func   string
+	Caller string
+
+	start  time.Time
+	failed string // error string if Fail() called
 }
 
-type StartOption func(*Span)
-type Field struct {
-	Key string
-	Val any
+type SpanRecord struct {
+	Name       string `json:"name"`
+	Depth      int    `json:"depth"`
+	DurationMS int64  `json:"duration_ms"`
+	Func       string `json:"func"`
+	Caller     string `json:"caller"`
+	Error      string `json:"error,omitempty"`
 }
 
-func WithField(k string, v any) StartOption { return func(s *Span) { s.Fields[k] = v } }
-func WithFields(m map[string]any) StartOption {
-	return func(s *Span) {
-		for k, v := range m {
-			s.Fields[k] = v
-		}
+// ---------------- Public API ----------------
+
+// StartTrace: create a trace and put it in ctx (used by middleware)
+func StartTrace(ctx context.Context, name string) (context.Context, *Trace) {
+	tid := TraceID(ctx)
+	if tid == "" {
+		tid = newTraceID()
+		ctx = context.WithValue(ctx, ctxTraceIDKey, tid)
 	}
+	tr := &Trace{
+		TraceID:  tid,
+		Name:     name,
+		Start:    time.Now(),
+		timeline: make([]SpanRecord, 0, 8),
+	}
+	ctx = context.WithValue(ctx, ctxTraceKey, tr)
+	return ctx, tr
 }
 
-func StartSpan(ctx context.Context, name string, opts ...StartOption) (context.Context, *Span) {
-	traceID := TraceID(ctx)
-	if traceID == "" {
-		traceID = newTraceID()
-		ctx = context.WithValue(ctx, ctxTraceIDKey, traceID)
+// StartSpan: begins a child span; returns span and a new ctx that sets it as current
+func StartSpan(ctx context.Context, name string) (*Span, context.Context) {
+	tr := CurrentTrace(ctx)
+	if tr == nil {
+		// allow use without StartTrace; create ephemeral trace
+		ctx, tr = StartTrace(ctx, "implicit")
 	}
-	parent := Current(ctx)
-	parentID := ""
+	parent := CurrentSpan(ctx)
 	depth := 0
 	if parent != nil {
-		parentID = parent.SpanID
 		depth = parent.Depth + 1
 	}
 	fn, file, line := caller(2)
+
 	sp := &Span{
-		TraceID:   traceID,
-		SpanID:    newSpanID(),
-		ParentID:  parentID,
-		Name:      name,
-		Start:     time.Now(),
-		Depth:     depth,
-		CallerFn:  fn,
-		CallerPos: fmt.Sprintf("%s:%d", shortFile(file), line),
-		Fields:    map[string]any{},
+		t:      tr,
+		Name:   name,
+		Depth:  depth,
+		Func:   fn,
+		Caller: fmtPos(file, line),
+		start:  time.Now(),
 	}
-	for _, o := range opts {
-		o(sp)
-	}
-
-	logf(ctx, "debug", "[span] started", map[string]any{
-		"trace_id":  sp.TraceID,
-		"span_id":   sp.SpanID,
-		"parent_id": sp.ParentID,
-		"name":      sp.Name,
-		"depth":     sp.Depth,
-		"func":      sp.CallerFn,
-		"caller":    sp.CallerPos,
-	})
-
 	ctx = context.WithValue(ctx, ctxSpanKey, sp)
-	return ctx, sp
+	return sp, ctx
 }
 
-func (s *Span) End(err error, extra ...Field) {
-	if s == nil || !atomic.CompareAndSwapInt32(&s.ended, 0, 1) {
+// Fail marks this span as having an error (call before End if needed)
+func (s *Span) Fail(err error) {
+	if s != nil && err != nil {
+		s.failed = err.Error()
+	}
+}
+
+// End finalizes span; no logging here—buffered for Flush
+func (s *Span) End() {
+	if s == nil || s.t == nil {
 		return
 	}
-	dur := time.Since(s.Start)
+	rec := SpanRecord{
+		Name:       s.Name,
+		Depth:      s.Depth,
+		DurationMS: time.Since(s.start).Milliseconds(),
+		Func:       s.Func,
+		Caller:     s.Caller,
+	}
+	if s.failed != "" {
+		rec.Error = s.failed
+	}
+
+	s.t.mu.Lock()
+	if rec.Error != "" {
+		s.t.errCnt++
+	}
+	s.t.timeline = append(s.t.timeline, rec)
+	s.t.mu.Unlock()
+}
+
+// Flush emits exactly one log for the whole trace.
+// If *errp != nil → level=error and include stack []string.
+// If handler ok but some spans failed → level=warn.
+// Else → level=info.
+func Flush(ctx context.Context, errp *error) {
+	tr := CurrentTrace(ctx)
+	if tr == nil {
+		return
+	}
+
+	tr.mu.Lock()
+	timeline := append([]SpanRecord(nil), tr.timeline...)
+	errCnt := tr.errCnt
+	tr.mu.Unlock()
+
+	total := time.Since(tr.Start).Milliseconds()
 	fields := map[string]any{
-		"trace_id":    s.TraceID,
-		"span_id":     s.SpanID,
-		"parent_id":   s.ParentID,
-		"name":        s.Name,
-		"duration_ms": dur.Milliseconds(),
-		"depth":       s.Depth,
-		"func":        s.CallerFn,
-		"caller":      s.CallerPos,
-	}
-	for k, v := range s.Fields {
-		fields[k] = v
-	}
-	for _, f := range extra {
-		fields[f.Key] = f.Val
+		"trace_id":    tr.TraceID,
+		"name":        tr.Name,
+		"total_ms":    total,
+		"span_count":  len(timeline),
+		"error_count": errCnt,
+		"timeline":    timeline,
 	}
 
 	level := "info"
-	msg := "[span] finished"
-	if err != nil {
+	msg := "[trace] finished"
+
+	if errp != nil && *errp != nil {
 		level = "error"
-		fields["error"] = err.Error()
-		msg = "[span] finished_with_error"
+		fields["handler_error"] = (*errp).Error()
+		fields["stack"] = buildStackSlice(3, 12) // []string
+	} else if errCnt > 0 {
+		level = "warn"
 	}
-	logf(context.WithValue(context.Background(), ctxTraceIDKey, s.TraceID), level, msg, fields)
+
+	logf(ctx, level, msg, fields)
 }
 
-func Event(ctx context.Context, msg string, kv map[string]any) {
-	if kv == nil {
-		kv = map[string]any{}
+// ---------------- Context helpers ----------------
+
+func CurrentTrace(ctx context.Context) *Trace {
+	if v := ctx.Value(ctxTraceKey); v != nil {
+		if t, ok := v.(*Trace); ok {
+			return t
+		}
 	}
-	if sp := Current(ctx); sp != nil {
-		kv["trace_id"], kv["span_id"], kv["depth"] = sp.TraceID, sp.SpanID, sp.Depth
-	}
-	logf(ctx, "debug", msg, kv)
+	return nil
 }
 
-func Current(ctx context.Context) *Span {
+func CurrentSpan(ctx context.Context) *Span {
 	if v := ctx.Value(ctxSpanKey); v != nil {
-		if sp, ok := v.(*Span); ok {
-			return sp
+		if s, ok := v.(*Span); ok {
+			return s
 		}
 	}
 	return nil
@@ -184,26 +210,7 @@ func TraceID(ctx context.Context) string {
 	return ""
 }
 
-func Inject(ctx context.Context, h http.Header) {
-	tid := TraceID(ctx)
-	if tid == "" {
-		tid = newTraceID()
-	}
-	h.Set("traceparent", formatTraceParent(tid, newSpanID()))
-	h.Set("X-Request-ID", tid)
-}
-
-func Extract(h http.Header) (traceID, parentSpanID string, ok bool) {
-	if tp := h.Get("traceparent"); tp != "" {
-		if tid, pid, ok := parseTraceParent(tp); ok {
-			return tid, pid, true
-		}
-	}
-	if rid := h.Get("X-Request-ID"); rid != "" {
-		return rid, "", true
-	}
-	return "", "", false
-}
+// ---------------- Utils ----------------
 
 func caller(skip int) (fn, file string, line int) {
 	pc, file, line, ok := runtime.Caller(skip)
@@ -213,36 +220,34 @@ func caller(skip int) (fn, file string, line int) {
 	fn = runtime.FuncForPC(pc).Name()
 	return fn, file, line
 }
-func shortFile(p string) string {
-	if i := strings.LastIndex(p, "/"); i >= 0 {
-		return p[i+1:]
+func shortFile(f string) string {
+	if i := strings.LastIndex(f, "/"); i >= 0 {
+		return f[i+1:]
 	}
-	return p
+	return f
 }
+func fmtPos(file string, line int) string { return fmt.Sprintf("%s:%d", shortFile(file), line) }
 
-// ===== helpers you already had =====
+func buildStackSlice(skip, max int) []string {
+	pcs := make([]uintptr, max+skip)
+	n := runtime.Callers(skip, pcs)
+	fs := runtime.CallersFrames(pcs[:n])
 
-func GetFuncName(fn interface{}) string {
-	if fn == nil {
-		return ""
+	out := make([]string, 0, max)
+	depth := 0
+	for {
+		fr, more := fs.Next()
+		if strings.Contains(fr.Function, "runtime.") {
+			if !more {
+				break
+			}
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s (%s:%d)", fr.Function, shortFile(fr.File), fr.Line))
+		depth++
+		if depth >= max || !more {
+			break
+		}
 	}
-	val := reflect.ValueOf(fn)
-	if val.Kind() != reflect.Func {
-		return ""
-	}
-	pc := val.Pointer()
-	f := runtime.FuncForPC(pc)
-	if f == nil {
-		return ""
-	}
-	return f.Name()
-}
-
-func GetShortFuncName(fn interface{}) string {
-	full := GetFuncName(fn)
-	if full == "" {
-		return ""
-	}
-	parts := strings.Split(full, ".")
-	return parts[len(parts)-1]
+	return out
 }
