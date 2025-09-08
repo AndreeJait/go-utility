@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -29,24 +30,24 @@ func Copy(dst any, src any) error {
 // ====================== Core ======================
 
 func convertAssign(dst, src reflect.Value) error {
-	// Unwrap pointers (src)
+	// Unwrap pointer src
 	for src.Kind() == reflect.Ptr {
 		if src.IsNil() {
+			// src nil → dst zero
 			dst.Set(reflect.Zero(dst.Type()))
 			return nil
 		}
 		src = src.Elem()
 	}
-	// Jika dst pointer, alokasikan dan kerjakan elemennya
+
+	// Jika dst pointer: handle NULL pgtype dulu agar bisa set nil
 	if dst.Kind() == reflect.Ptr {
-		// Jangan alokasikan dulu; cek apakah src adalah pgtype.* null
-		if src.Kind() == reflect.Struct {
-			if isPg, isNull := isPgtypeNull(src); isPg && isNull {
-				dst.Set(reflect.Zero(dst.Type())) // nil
-				return nil
-			}
+		if isPg, isNull := isPgtypeNullValue(src); isPg && isNull {
+			// src adalah pgtype NULL → dst pointer = nil
+			dst.Set(reflect.Zero(dst.Type()))
+			return nil
 		}
-		// lanjut: baru alokasikan bila tidak null
+		// alok lalu teruskan ke elem
 		if dst.IsNil() {
 			dst.Set(reflect.New(dst.Type().Elem()))
 		}
@@ -59,12 +60,12 @@ func convertAssign(dst, src reflect.Value) error {
 		return nil
 	}
 
-	// 0) Prioritas: pgtype.AssignTo
+	// 1) pgtype.AssignTo (prioritas utama) - pointer-aware & fallback ke string
 	if handled, err := tryAssignViaPgtype(dst, src); handled {
 		return err
 	}
 
-	// 1) Unwrap nullable untuk database/sql Null*
+	// 2) Unwrap database/sql Null*
 	if base, ok, valid := unwrapSQLNull(src); ok {
 		if !valid {
 			dst.Set(reflect.Zero(dst.Type()))
@@ -77,17 +78,17 @@ func convertAssign(dst, src reflect.Value) error {
 		}
 	}
 
-	// 2) Jika target struct/map/slice dan sumber adalah string/[]byte yang "mirip JSON", unmarshal
+	// 3) Jika target struct/map/slice dan sumber adalah string/[]byte "mirip JSON" → unmarshal
 	if (dst.Kind() == reflect.Struct || dst.Kind() == reflect.Map || dst.Kind() == reflect.Slice) && looksLikeJSON(src) {
 		return convertJSON(dst, src)
 	}
 
-	// 3) Number ↔ Number
-	if isNumber(dst.Kind()) && isNumber(src.Kind()) {
+	// 4) Number ↔ Number (termasuk src string numeric)
+	if isNumber(dst.Kind()) && (isNumber(src.Kind()) || src.Kind() == reflect.String) {
 		return numberToNumber(dst, src)
 	}
 
-	// 4) String ↔ []byte
+	// 5) String ↔ []byte
 	if dst.Kind() == reflect.String && isBytes(src) {
 		dst.SetString(string(src.Bytes()))
 		return nil
@@ -97,7 +98,7 @@ func convertAssign(dst, src reflect.Value) error {
 		return nil
 	}
 
-	// 5) time.Time & string/int64 (unix)
+	// 6) time.Time & string/int64 (unix) & pgtype timestamp (via toTime)
 	if dst.Type() == reflect.TypeOf(time.Time{}) {
 		return toTime(dst, src)
 	}
@@ -105,7 +106,7 @@ func convertAssign(dst, src reflect.Value) error {
 		return fromTime(dst, src)
 	}
 
-	// 6) Slice/Array
+	// 7) Slice/Array
 	if dst.Kind() == reflect.Slice {
 		return sliceConvert(dst, src)
 	}
@@ -113,83 +114,125 @@ func convertAssign(dst, src reflect.Value) error {
 		return arrayConvert(dst, src)
 	}
 
-	// 7) Map[string]T
+	// 8) Map[string]T
 	if dst.Kind() == reflect.Map {
 		return mapConvert(dst, src)
 	}
 
-	// 8) Struct
+	// 9) Struct
 	if dst.Kind() == reflect.Struct {
 		return structConvert(dst, src)
 	}
 
-	// 9) Fallback (string/bool conversion, dll.)
+	// 10) Fallback generik
 	return fallbackConvert(dst, src)
 }
 
-// ====================== pgtype AssignTo (v5.5.5) ======================
+// ====================== pgtype AssignTo ======================
+
+// isPgtypeNullValue: deteksi pola pgtype.* dengan field Valid=false (NULL).
+func isPgtypeNullValue(src reflect.Value) (isPgtype bool, isNull bool) {
+	v := src
+	if v.Kind() == reflect.Ptr && !v.IsNil() {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return false, false
+	}
+	if f := v.FieldByName("Valid"); f.IsValid() && f.Kind() == reflect.Bool {
+		return true, !f.Bool()
+	}
+	return false, false
+}
 
 // tryAssignViaPgtype memanggil AssignTo(&dst) bila ada.
-// Jika AssignTo error (contoh: Numeric → float64 overflow), coba AssignTo ke string,
-// lalu lanjutkan konversi biasa dari string ke tipe dst bila memungkinkan.
+// Jika gagal, coba AssignTo ke *string, lalu konversi ke tipe dst (JSON/number/time/fallback).
 func tryAssignViaPgtype(dst, src reflect.Value) (handled bool, err error) {
-	// Cari method AssignTo pada value atau addressable value
-	m := src.MethodByName("AssignTo")
-	if !m.IsValid() && src.CanAddr() {
-		m = src.Addr().MethodByName("AssignTo")
-	}
-	if !m.IsValid() && src.Kind() == reflect.Ptr && !src.IsNil() {
-		m = src.Elem().MethodByName("AssignTo")
-		if !m.IsValid() && src.Elem().CanAddr() {
-			m = src.Elem().Addr().MethodByName("AssignTo")
-		}
-	}
+	// Temukan method AssignTo di value / &value / elem / &elem
+	m := methodAssignTo(src)
 	if !m.IsValid() {
 		return false, nil
 	}
 
-	// 1) Coba langsung ke tipe dst
-	dstPtr := reflect.New(dst.Type())
-	out := m.Call([]reflect.Value{dstPtr})
+	// Siapkan argumen:
+	// - jika dst pointer → langsung pakai dst (mis. *time.Time, *int64, *string, *[]byte)
+	// - jika dst non-pointer → buat *T sementara
+	var dstArg reflect.Value
+	if dst.Kind() == reflect.Ptr {
+		if dst.IsNil() {
+			dst.Set(reflect.New(dst.Type().Elem()))
+		}
+		dstArg = dst
+	} else {
+		dstArg = reflect.New(dst.Type())
+	}
+
+	// Panggil AssignTo
+	out := m.Call([]reflect.Value{dstArg})
 	if len(out) == 1 && !out[0].IsNil() {
-		// gagal → coba AssignTo ke string dulu (universal)
+		// error: coba AssignTo ke *string
 		var s string
 		sPtr := reflect.New(reflect.TypeOf(s))
 		out2 := m.Call([]reflect.Value{sPtr})
 		if len(out2) == 1 && !out2[0].IsNil() {
-			// tetap gagal: biarkan aturan lain menangani
+			// tetap error → biar aturan lain yang coba
 			return false, nil
 		}
-		// sukses ke string → konversi string ke tipe dst (JSON/number/time/string)
-		tmp := sPtr.Elem()
+		tmp := sPtr.Elem() // string
+
 		if dst.Kind() == reflect.String {
 			dst.Set(tmp)
 			return true, nil
 		}
+		// JSON?
 		if (dst.Kind() == reflect.Struct || dst.Kind() == reflect.Map || dst.Kind() == reflect.Slice) && looksLikeJSON(tmp) {
 			return true, convertJSON(dst, tmp)
 		}
+		// Number?
 		if isNumber(dst.Kind()) {
-			return true, numberToNumber(dst, tmpToNumber(tmp))
+			return true, numberToNumber(dst, tmp)
 		}
+		// time?
 		if dst.Type() == reflect.TypeOf(time.Time{}) {
 			return true, toTime(dst, tmp)
 		}
+		// []byte?
+		if isBytes(dst) {
+			dst.SetBytes([]byte(tmp.String()))
+			return true, nil
+		}
+		// Fallback
 		return true, fallbackConvert(dst, tmp)
 	}
 
-	// 2) AssignTo langsung sukses
-	dst.Set(dstPtr.Elem())
+	// AssignTo sukses
+	if dst.Kind() != reflect.Ptr {
+		dst.Set(dstArg.Elem())
+	}
 	return true, nil
 }
 
-func tmpToNumber(s reflect.Value) reflect.Value {
-	if s.Kind() == reflect.String {
-		if f, err := strconv.ParseFloat(s.String(), 64); err == nil {
-			return reflect.ValueOf(f)
+func methodAssignTo(v reflect.Value) reflect.Value {
+	if m := v.MethodByName("AssignTo"); m.IsValid() {
+		return m
+	}
+	if v.CanAddr() {
+		if m := v.Addr().MethodByName("AssignTo"); m.IsValid() {
+			return m
 		}
 	}
-	return s
+	if v.Kind() == reflect.Ptr && !v.IsNil() {
+		e := v.Elem()
+		if m := e.MethodByName("AssignTo"); m.IsValid() {
+			return m
+		}
+		if e.CanAddr() {
+			if m := e.Addr().MethodByName("AssignTo"); m.IsValid() {
+				return m
+			}
+		}
+	}
+	return reflect.Value{}
 }
 
 // ====================== Nullable unwrap (database/sql) ======================
@@ -234,7 +277,6 @@ func convertJSON(dst, src reflect.Value) error {
 	} else if src.Kind() == reflect.String {
 		raw = []byte(src.String())
 	} else {
-		// sebagai safeguard untuk kasus AssignTo mengembalikan tipe lain
 		raw = []byte(fmt.Sprint(src.Interface()))
 	}
 
@@ -278,7 +320,7 @@ func numberToNumber(dst, src reflect.Value) error {
 	case reflect.Float32, reflect.Float64:
 		f = src.Convert(reflect.TypeOf(float64(0))).Float()
 	case reflect.String:
-		parsed, err := strconv.ParseFloat(src.String(), 64)
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(src.String()), 64)
 		if err != nil {
 			return err
 		}
@@ -306,26 +348,72 @@ func numberToNumber(dst, src reflect.Value) error {
 // ====================== time.Time ======================
 
 func toTime(dst, src reflect.Value) error {
-	switch src.Kind() {
-	case reflect.String:
-		if t, err := time.Parse(time.RFC3339, src.String()); err == nil {
+	// Fast path: sudah time.Time
+	if src.Type() == reflect.TypeOf(time.Time{}) {
+		dst.Set(src)
+		return nil
+	}
+
+	// 1) Coba AssignTo(&time.Time) jika ada (pgtype.Timestamp/Timestamptz/Date)
+	if m := methodAssignTo(src); m.IsValid() {
+		var t time.Time
+		out := m.Call([]reflect.Value{reflect.ValueOf(&t)})
+		if len(out) == 1 && out[0].IsNil() {
 			dst.Set(reflect.ValueOf(t))
 			return nil
 		}
-		if sec, err := strconv.ParseInt(src.String(), 10, 64); err == nil {
+		// kalau error karena NULL → zero time
+		if len(out) == 1 && !out[0].IsNil() {
+			if err, ok := out[0].Interface().(error); ok && strings.Contains(err.Error(), "NULL") {
+				dst.Set(reflect.Zero(dst.Type()))
+				return nil
+			}
+			// lanjut fallback lain
+		}
+	}
+
+	// 2) String (RFC3339 / unix detik)
+	switch src.Kind() {
+	case reflect.String:
+		s := strings.TrimSpace(src.String())
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			dst.Set(reflect.ValueOf(t))
+			return nil
+		}
+		if sec, err := strconv.ParseInt(s, 10, 64); err == nil {
 			dst.Set(reflect.ValueOf(time.Unix(sec, 0)))
 			return nil
 		}
 	case reflect.Int, reflect.Int64:
 		dst.Set(reflect.ValueOf(time.Unix(src.Int(), 0)))
 		return nil
-	case reflect.Struct:
-		if src.Type() == reflect.TypeOf(time.Time{}) {
-			dst.Set(src)
+	}
+
+	// 3) Fallback berbasis field (pgtype.*)
+	if src.Kind() == reflect.Struct {
+		// NULL? (Valid=false) → zero
+		if vf := src.FieldByName("Valid"); vf.IsValid() && vf.Kind() == reflect.Bool && !vf.Bool() {
+			dst.Set(reflect.Zero(dst.Type()))
+			return nil
+		}
+		// Timestamp/Timestamptz punya field Time time.Time
+		if tf := src.FieldByName("Time"); tf.IsValid() && tf.Type() == reflect.TypeOf(time.Time{}) {
+			dst.Set(tf)
+			return nil
+		}
+		// Date: Year/Month/Day
+		yf, mf, df := src.FieldByName("Year"), src.FieldByName("Month"), src.FieldByName("Day")
+		if yf.IsValid() && mf.IsValid() && df.IsValid() &&
+			isIntKind(yf.Kind()) && isIntKind(mf.Kind()) && isIntKind(df.Kind()) {
+			y := int(yf.Int())
+			m := time.Month(mf.Int())
+			d := int(df.Int())
+			dst.Set(reflect.ValueOf(time.Date(y, m, d, 0, 0, 0, 0, time.UTC)))
 			return nil
 		}
 	}
-	return fmt.Errorf("cannot convert %s to time.Time", src.Kind())
+
+	return fmt.Errorf("cannot convert %s (%s) to time.Time", src.Kind(), src.Type())
 }
 
 func fromTime(dst, src reflect.Value) error {
@@ -339,6 +427,10 @@ func fromTime(dst, src reflect.Value) error {
 		return nil
 	}
 	return fmt.Errorf("cannot convert time.Time to %s", dst.Kind())
+}
+
+func isIntKind(k reflect.Kind) bool {
+	return k == reflect.Int || k == reflect.Int8 || k == reflect.Int16 || k == reflect.Int32 || k == reflect.Int64
 }
 
 // ====================== bytes ======================
@@ -412,7 +504,7 @@ func mapConvert(dst, src reflect.Value) error {
 			out.SetMapIndex(reflect.ValueOf(keyStr), val)
 		}
 	case reflect.Struct:
-		tmp := structToStringMap(src) // pakai prioritas db > json
+		tmp := structToStringMap(src) // pakai prioritas db > json > Name
 		iter := tmp.MapRange()
 		for iter.Next() {
 			val := reflect.New(dst.Type().Elem()).Elem()
@@ -429,11 +521,10 @@ func mapConvert(dst, src reflect.Value) error {
 	return nil
 }
 
-// Struct ← Struct / Map
 func structConvert(dst, src reflect.Value) error {
 	switch src.Kind() {
 	case reflect.Struct:
-		srcFields := indexStructFields(src.Type()) // db > json > Name
+		srcFields := indexStructFields(src.Type()) // db > json > Name > lowerFirst
 		for i := 0; i < dst.NumField(); i++ {
 			df := dst.Field(i)
 			if !df.CanSet() {
@@ -494,6 +585,7 @@ func structConvert(dst, src reflect.Value) error {
 			}
 		}
 		return nil
+
 	default:
 		return fmt.Errorf("cannot convert %s to struct", src.Kind())
 	}
@@ -571,7 +663,7 @@ func fallbackConvert(dst, src reflect.Value) error {
 	case reflect.Bool:
 		switch src.Kind() {
 		case reflect.String:
-			b, err := strconv.ParseBool(src.String())
+			b, err := strconv.ParseBool(strings.TrimSpace(src.String()))
 			if err != nil {
 				return err
 			}
@@ -588,17 +680,5 @@ func fallbackConvert(dst, src reflect.Value) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("no conversion rule from %s to %s", src.Type(), dst.Type())
-}
-
-// isPgtypeNull: kalau v struct punya field Valid bool dan false → null.
-func isPgtypeNull(v reflect.Value) (isPgtype bool, isNull bool) {
-	//t := v.Type()
-	if v.Kind() == reflect.Struct {
-		if f := v.FieldByName("Valid"); f.IsValid() && f.Kind() == reflect.Bool {
-			return true, !f.Bool()
-		}
-		// beberapa pgtype (array dsb.) mungkin bungkus pointer; coba elem addr juga
-	}
-	return false, false
+	return fmt.Errorf("no conversion rule from %s (%s) to %s", src.Kind(), src.Type(), dst.Type())
 }
