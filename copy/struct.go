@@ -67,23 +67,36 @@ func transformValue(v reflect.Value, path string, opts *ObjectCopyOptions) any {
 		v = v.Elem()
 	}
 
-	// >>> baru: coba unwrap pgtype.*
+	// 1) Unwrap pgtype.* (punyamu, tetap)
 	if out, ok := tryUnwrapPgType(v, path, opts); ok {
 		return out
 	}
 
+	// 2) time.Time → hormati stringify rules
+	if v.Kind() == reflect.Struct && v.Type() == timeType {
+		return stringifyIfNeeded(path, v, opts)
+	}
+
 	switch v.Kind() {
 	case reflect.Struct:
-		// time.Time → tetap lewat stringifyIfNeeded agar bisa diformat
-		if v.Type() == timeType {
-			return stringifyIfNeeded(path, v, opts)
+		// **Baru**: kalau struct ini implement json.Marshaler atau encoding.TextMarshaler,
+		// kita pakai representasi JSON-nya langsung (agar “tercopy” utuh).
+		if v.CanInterface() {
+			if _, ok := v.Interface().(json.Marshaler); ok {
+				return marshalToIface(v.Interface())
+			}
+			if tm, ok := v.Interface().(interface{ MarshalText() ([]byte, error) }); ok {
+				if b, err := tm.MarshalText(); err == nil {
+					return string(b)
+				}
+			}
 		}
-		// struct umum → map
+		// Fallback: pecah field (seperti sebelumnya)
 		out := make(map[string]any)
 		t := v.Type()
 		for i := 0; i < t.NumField(); i++ {
 			sf := t.Field(i)
-			if sf.PkgPath != "" {
+			if sf.PkgPath != "" { // unexported
 				continue
 			}
 			name, skip := jsonFieldName(sf, opts.UseJSONTags)
@@ -96,6 +109,15 @@ func transformValue(v reflect.Value, path string, opts *ObjectCopyOptions) any {
 		return out
 
 	case reflect.Slice, reflect.Array:
+		// []byte → encode seperti BYTEA agar konsisten & aman JSON
+		if v.Kind() == reflect.Slice && v.Type().Elem().Kind() == reflect.Uint8 {
+			b := make([]byte, v.Len())
+			reflect.Copy(reflect.ValueOf(b), v)
+			if strings.ToLower(opts.ByteaEncoding) == "hex" {
+				return "0x" + hex.EncodeToString(b)
+			}
+			return base64.StdEncoding.EncodeToString(b)
+		}
 		n := v.Len()
 		out := make([]any, n)
 		for i := 0; i < n; i++ {
@@ -105,8 +127,13 @@ func transformValue(v reflect.Value, path string, opts *ObjectCopyOptions) any {
 		return out
 
 	case reflect.Map:
+		// Map key non-string tidak valid di JSON → roundtrip supaya aman
+		// (encoder akan konversi melalui MarshalJSON/Marshaler bila ada; kalau tidak, bisa gagal)
 		if v.Type().Key().Kind() != reflect.String {
-			return v.Interface()
+			if v.CanInterface() {
+				return marshalToIface(v.Interface())
+			}
+			return marshalToIface(toInterface(v))
 		}
 		out := make(map[string]any)
 		iter := v.MapRange()
@@ -121,12 +148,18 @@ func transformValue(v reflect.Value, path string, opts *ObjectCopyOptions) any {
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Float32, reflect.Float64, reflect.String:
 		if _, ok := findRuleForPath(path, opts.Stringify); ok {
+			// Kalau ada rule di path ini, paksa jadi string
 			return fmt.Sprint(v.Interface())
 		}
 		return v.Interface()
 
 	default:
-		return v.Interface()
+		// **Baru**: untuk tipe lain (chan, func, complex, dsb.) atau custom types yang
+		// tidak kita handle, pakai roundtrip JSON biar “tercopy” kalau memungkinkan.
+		if v.CanInterface() {
+			return marshalToIface(v.Interface())
+		}
+		return marshalToIface(toInterface(v))
 	}
 }
 
@@ -584,4 +617,20 @@ func formatMAC(b []byte) string {
 		parts = append(parts, fmt.Sprintf("%02x", x))
 	}
 	return strings.Join(parts, ":")
+}
+
+// --- tambahkan helper ini ---
+func marshalToIface(x any) any {
+	// Gunakan JSON encoder bawaan untuk menghormati MarshalJSON/TextMarshaler,
+	// sekaligus menormalkan struktur (map key -> string, dsb.)
+	b, err := json.Marshal(x)
+	if err != nil {
+		// fallback keras: kalau benar-benar gagal, balikin nilai mentah
+		return x
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return x
+	}
+	return out
 }
