@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+// ------------------------ Options & Rules ------------------------
+
 type StringifyRule struct {
 	TimeFormat     string
 	IfZeroUseEmpty bool
@@ -33,17 +35,21 @@ type ObjectCopyOptions struct {
 
 	// Konversi preferensi
 	NumericAsString  bool   // true=string "123.45"; false=float64 (bila bisa)
-	JSONAsRawMessage bool   // true=[]byte (json.RawMessage); false=decode ke interface{}
+	JSONAsRawMessage bool   // true=json.RawMessage; false=decode ke interface{}
 	UUIDAsString     bool   // true="xxxxxxxx-xxxx-...."
 	InetAsString     bool   // true="1.2.3.4/24"
 	ByteaEncoding    string // "base64" (default) atau "hex"
+
+	// (Opsional) alias path → ganti nama key saat memecah struct src
+	KeyAliases map[string]string // map["customer.phone"] = "phone_number"
 }
 
 var timeType = reflect.TypeOf(time.Time{})
 var timePtrType = reflect.TypeOf(&time.Time{})
 
-// === Core transformer ===
+// ------------------------ Public API ------------------------
 
+// Struct menyalin dari src ke dst dengan aturan/opsi.
 func Struct(src any, dst any, opts ObjectCopyOptions) error {
 	if opts.DefaultTimeFormat == "" {
 		opts.DefaultTimeFormat = time.RFC3339
@@ -56,31 +62,40 @@ func Struct(src any, dst any, opts ObjectCopyOptions) error {
 	return json.Unmarshal(b, dst)
 }
 
+// ------------------------ Core Transformer ------------------------
+
 func transformValue(v reflect.Value, path string, opts *ObjectCopyOptions) any {
 	if !v.IsValid() {
 		return nil
 	}
+
+	// Unwrap interface/pointer secara bertahap
 	for v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return nil
 		}
+		// Jika pointer ke pgtype.*, langsung unbox
+		if v.Kind() == reflect.Pointer && strings.Contains(v.Type().Elem().PkgPath(), "github.com/jackc/pgx/v5/pgtype") {
+			if out, ok := tryUnwrapPgType(v.Elem(), path, opts); ok {
+				return out
+			}
+		}
 		v = v.Elem()
 	}
 
-	// 1) Unwrap pgtype.* (punyamu, tetap)
+	// Unwrap pgtype.* (non-pointer)
 	if out, ok := tryUnwrapPgType(v, path, opts); ok {
 		return out
 	}
 
-	// 2) time.Time → hormati stringify rules
+	// time.Time → hormati stringify rules
 	if v.Kind() == reflect.Struct && v.Type() == timeType {
 		return stringifyIfNeeded(path, v, opts)
 	}
 
 	switch v.Kind() {
 	case reflect.Struct:
-		// **Baru**: kalau struct ini implement json.Marshaler atau encoding.TextMarshaler,
-		// kita pakai representasi JSON-nya langsung (agar “tercopy” utuh).
+		// Hormati custom marshaller jika ada
 		if v.CanInterface() {
 			if _, ok := v.Interface().(json.Marshaler); ok {
 				return marshalToIface(v.Interface())
@@ -91,7 +106,7 @@ func transformValue(v reflect.Value, path string, opts *ObjectCopyOptions) any {
 				}
 			}
 		}
-		// Fallback: pecah field (seperti sebelumnya)
+		// Fallback: pecah field ke map[string]any
 		out := make(map[string]any)
 		t := v.Type()
 		for i := 0; i < t.NumField(); i++ {
@@ -103,13 +118,19 @@ func transformValue(v reflect.Value, path string, opts *ObjectCopyOptions) any {
 			if skip {
 				continue
 			}
-			child := joinPath(path, name)
-			out[name] = transformValue(v.Field(i), child, opts)
+			alias := name
+			if opts.KeyAliases != nil {
+				if a, ok := opts.KeyAliases[joinPath(path, name)]; ok && a != "" {
+					alias = a
+				}
+			}
+			child := joinPath(path, alias)
+			out[alias] = transformValue(v.Field(i), child, opts)
 		}
 		return out
 
 	case reflect.Slice, reflect.Array:
-		// []byte → encode seperti BYTEA agar konsisten & aman JSON
+		// []byte → encode aman JSON
 		if v.Kind() == reflect.Slice && v.Type().Elem().Kind() == reflect.Uint8 {
 			b := make([]byte, v.Len())
 			reflect.Copy(reflect.ValueOf(b), v)
@@ -127,43 +148,47 @@ func transformValue(v reflect.Value, path string, opts *ObjectCopyOptions) any {
 		return out
 
 	case reflect.Map:
-		// Map key non-string tidak valid di JSON → roundtrip supaya aman
-		// (encoder akan konversi melalui MarshalJSON/Marshaler bila ada; kalau tidak, bisa gagal)
+		// Map key non-string → roundtrip agar valid JSON
 		if v.Type().Key().Kind() != reflect.String {
 			if v.CanInterface() {
 				return marshalToIface(v.Interface())
 			}
-			return marshalToIface(toInterface(v))
+			return marshalToIface(v.Interface())
 		}
 		out := make(map[string]any)
 		iter := v.MapRange()
 		for iter.Next() {
 			k := iter.Key().String()
-			child := joinPath(path, k)
-			out[k] = transformValue(iter.Value(), child, opts)
+			alias := k
+			if opts.KeyAliases != nil {
+				if a, ok := opts.KeyAliases[joinPath(path, k)]; ok && a != "" {
+					alias = a
+				}
+			}
+			child := joinPath(path, alias)
+			out[alias] = transformValue(iter.Value(), child, opts)
 		}
 		return out
 
 	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Float32, reflect.Float64, reflect.String:
+		// Paksa stringify bila ada rule di path ini
 		if _, ok := findRuleForPath(path, opts.Stringify); ok {
-			// Kalau ada rule di path ini, paksa jadi string
 			return fmt.Sprint(v.Interface())
 		}
 		return v.Interface()
 
 	default:
-		// **Baru**: untuk tipe lain (chan, func, complex, dsb.) atau custom types yang
-		// tidak kita handle, pakai roundtrip JSON biar “tercopy” kalau memungkinkan.
+		// Tipe lain → roundtrip JSON supaya tetap “tercopy” bila memungkinkan
 		if v.CanInterface() {
 			return marshalToIface(v.Interface())
 		}
-		return marshalToIface(toInterface(v))
+		return marshalToIface(v.Interface())
 	}
 }
 
-// Jika path match rule → ubah time ke string; selain itu kembalikan time.Time biasa (biar JSON encode sebagai RFC3339)
+// Jika path match rule → ubah time ke string; selain itu kembalikan time.Time
 func stringifyIfNeeded(path string, v reflect.Value, opts *ObjectCopyOptions) any {
 	var t time.Time
 	if v.Type() == timeType {
@@ -187,112 +212,11 @@ func stringifyIfNeeded(path string, v reflect.Value, opts *ObjectCopyOptions) an
 		}
 		return t.Format(format)
 	}
-	// kalau tidak ada rule, kembalikan object time.Time (biar JSON pakai RFC3339)
 	return t
 }
 
-// === Helpers ===
+// ------------------------ pgtype Unwrapper ------------------------
 
-func jsonFieldName(sf reflect.StructField, useJSONTag bool) (name string, skip bool) {
-	if !useJSONTag {
-		return sf.Name, false
-	}
-	tag := sf.Tag.Get("json")
-	if tag == "-" {
-		return "", true
-	}
-	if tag == "" {
-		return sf.Name, false
-	}
-	parts := strings.Split(tag, ",")
-	n := parts[0]
-	if n == "" {
-		return sf.Name, false
-	}
-	return n, false
-}
-
-func joinPath(parent, child string) string {
-	if parent == "" {
-		return child
-	}
-	return parent + "." + child
-}
-
-// Normalisasi path:
-// - ganti [<angka>] → []
-// - untuk map wildcard → caller mendefinisikan rule dengan ".*" pada segmen itu
-func normalizeIndexes(p string) string {
-	var sb strings.Builder
-	runes := []rune(p)
-	for i := 0; i < len(runes); i++ {
-		if runes[i] == '[' {
-			// konsumsi sampai ']'
-			for i < len(runes) && runes[i] != ']' {
-				i++
-			}
-			// ganti dengan []
-			sb.WriteString("[]")
-			continue
-		}
-		sb.WriteRune(runes[i])
-	}
-	return sb.String()
-}
-
-func mapWildcard(p string) string {
-	// Ubah setiap segmen konkret menjadi ".*" jika ingin wild-match map key.
-	// Implementasi sederhana: caller menulis rule dengan ".*" manual;
-	// di sisi matcher, kita juga cek varian yang mengganti segmen terakhir jadi ".*"
-	return p
-}
-
-func findRuleForPath(curPath string, rules map[string]StringifyRule) (StringifyRule, bool) {
-	// Exact
-	if r, ok := rules[curPath]; ok {
-		return r, true
-	}
-	// Normalisasi indeks → []
-	norm := normalizeIndexes(curPath)
-	if r, ok := rules[norm]; ok {
-		return r, true
-	}
-	// Coba varian wildcard map: ganti segmen terakhir jadi ".*"
-	if r, ok := rules[replaceLastSegmentWithStar(norm)]; ok {
-		return r, true
-	}
-	// Coba semua segmen jadi star (agresif, tapi berguna)
-	if r, ok := rules[allSegmentsStar(norm)]; ok {
-		return r, true
-	}
-	return StringifyRule{}, false
-}
-
-func replaceLastSegmentWithStar(p string) string {
-	segs := strings.Split(p, ".")
-	if len(segs) == 0 {
-		return p
-	}
-	segs[len(segs)-1] = "*"
-	return strings.Join(segs, ".")
-}
-
-func allSegmentsStar(p string) string {
-	segs := strings.Split(p, ".")
-	for i := range segs {
-		// Jangan ubah [] (indeks wildcard)
-		if segs[i] != "[]" {
-			segs[i] = "*"
-		}
-	}
-	return strings.Join(segs, ".")
-}
-
-func toInterface(v reflect.Value) any {
-	return v.Interface()
-}
-
-// tryUnwrapPgType meng-unbox nilai pgtype.* menjadi tipe Go biasa atau string
 func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any, bool) {
 	t := v.Type()
 	if !strings.Contains(t.PkgPath(), "github.com/jackc/pgx/v5/pgtype") {
@@ -378,7 +302,7 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		if b, ok := getf("Bool"); ok && b.Kind() == reflect.Bool {
 			return b.Bool(), true
 		}
-		// fallback: some versions use "Bool" or "Value"
+		// fallback: some versions use "Value"
 		if val, ok := getf("Value"); ok && val.IsValid() && val.Kind() == reflect.Bool {
 			return val.Bool(), true
 		}
@@ -391,14 +315,13 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		if ok, _ := isValid(); !ok {
 			return nullReturn("int"), true
 		}
-		// prioritaskan Int64, jatuh ke Int32/Int16
 		if f, ok := getf("Int64"); ok && f.Kind() == reflect.Int64 {
 			return f.Int(), true
 		}
-		if f, ok := getf("Int32"); ok && f.Kind() == reflect.Int32 {
+		if f, ok := getf("Int32"); ok {
 			return int64(f.Int()), true
 		}
-		if f, ok := getf("Int16"); ok && f.Kind() == reflect.Int16 {
+		if f, ok := getf("Int16"); ok {
 			return int64(f.Int()), true
 		}
 		return int64(0), true
@@ -410,10 +333,10 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		if ok, _ := isValid(); !ok {
 			return nullReturn("float"), true
 		}
-		if f, ok := getf("Float64"); ok && (f.Kind() == reflect.Float64 || f.Kind() == reflect.Float32) {
+		if f, ok := getf("Float64"); ok {
 			return f.Float(), true
 		}
-		if f, ok := getf("Float32"); ok && (f.Kind() == reflect.Float32 || f.Kind() == reflect.Float64) {
+		if f, ok := getf("Float32"); ok {
 			return f.Float(), true
 		}
 		return float64(0), true
@@ -429,11 +352,9 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		if opts.NumericAsString {
 			return s, true
 		}
-		// attempt parse ke float64 (bisa kehilangan presisi)
 		if fv, err := strconv.ParseFloat(s, 64); err == nil {
 			return fv, true
 		}
-		// fallback: tetap string
 		return s, true
 	}
 
@@ -445,8 +366,7 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		}
 
 		// Banyak pgtype waktu punya field 'Time time.Time'
-		if tf, ok := getf("Time"); ok && tf.IsValid() && tf.Type() == reflect.TypeOf(time.Time{}) {
-			// Hormati rule stringify (format)
+		if tf, ok := getf("Time"); ok && tf.IsValid() && tf.Type() == timeType {
 			return stringifyIfNeeded(path, tf, opts), true
 		}
 
@@ -454,10 +374,9 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		yF, yOk := getf("Year")
 		mF, mOk := getf("Month")
 		dF, dOk := getf("Day")
-		if yOk && mOk && dOk && (yF.Kind() == reflect.Int32 || yF.Kind() == reflect.Int || yF.Kind() == reflect.Int64) {
+		if yOk && mOk && dOk {
 			t := time.Date(int(yF.Int()), time.Month(mF.Int()), int(dF.Int()), 0, 0, 0, 0, time.UTC)
-			rv := reflect.ValueOf(t)
-			return stringifyIfNeeded(path, rv, opts), true
+			return stringifyIfNeeded(path, reflect.ValueOf(t), opts), true
 		}
 
 		// Timetz/Time variasi: Hour, Minute, Second, Microseconds
@@ -466,8 +385,7 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 			secF, _ := getf("Second")
 			usF, _ := getf("Microseconds")
 			t := time.Date(1970, 1, 1, int(hF.Int()), int(minF.Int()), int(secF.Int()), int(usF.Int())*1000, time.UTC)
-			rv := reflect.ValueOf(t)
-			return stringifyIfNeeded(path, rv, opts), true
+			return stringifyIfNeeded(path, reflect.ValueOf(t), opts), true
 		}
 
 		// fallback: gunakan fmt
@@ -482,12 +400,9 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		if !opts.UUIDAsString {
 			return v.Interface(), true
 		}
-		// pgtype.UUID biasanya punya field Bytes [16]byte
 		if bf, ok := getf("Bytes"); ok && bf.IsValid() && bf.CanAddr() {
-			// format ke string xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 			b := bf.Bytes()
 			if len(b) == 0 && bf.Kind() == reflect.Array && bf.Len() == 16 {
-				// array [16]byte
 				b = make([]byte, 16)
 				reflect.Copy(reflect.ValueOf(b), bf)
 			}
@@ -503,7 +418,6 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		if ok, _ := isValid(); !ok {
 			return nil, true
 		}
-		// Field Bytes []byte atau mungkin RawMessage
 		if bf, ok := getf("Bytes"); ok && (bf.Kind() == reflect.Slice || bf.Kind() == reflect.Array) {
 			raw := make([]byte, bf.Len())
 			reflect.Copy(reflect.ValueOf(raw), bf)
@@ -517,7 +431,6 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 			if err := json.Unmarshal(raw, &out); err == nil {
 				return out, true
 			}
-			// fallback: string
 			return string(raw), true
 		}
 		return nil, true
@@ -531,14 +444,12 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		if !opts.InetAsString {
 			return v.Interface(), true
 		}
-		// Banyak implementasi punya field IPNet *net.IPNet
 		if nf, ok := getf("IPNet"); ok && !nf.IsNil() {
 			ipnet, _ := nf.Interface().(*net.IPNet)
 			if ipnet != nil {
 				return ipnet.String(), true
 			}
 		}
-		// beberapa varian punya IP []byte, Mask int?
 		if ipF, ok := getf("IP"); ok && ipF.IsValid() && ipF.Kind() == reflect.Slice {
 			ip := make([]byte, ipF.Len())
 			reflect.Copy(reflect.ValueOf(ip), ipF)
@@ -552,7 +463,6 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		if ok, _ := isValid(); !ok {
 			return nil, true
 		}
-		// Cari field Addr [6]byte atau [8]byte
 		if af, ok := getf("Addr"); ok && af.IsValid() && af.Kind() == reflect.Array {
 			n := af.Len()
 			bytes := make([]byte, n)
@@ -577,13 +487,12 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 			if strings.ToLower(opts.ByteaEncoding) == "hex" {
 				return "0x" + hex.EncodeToString(b), true
 			}
-			// default base64
 			return base64.StdEncoding.EncodeToString(b), true
 		}
 		return nil, true
 	}
 
-	// --- OID (optional) ---
+	// --- OID (opsional) ---
 	if name == "OID" {
 		if ok, _ := isValid(); !ok {
 			return nil, true
@@ -594,14 +503,121 @@ func tryUnwrapPgType(v reflect.Value, path string, opts *ObjectCopyOptions) (any
 		return fmt.Sprint(v.Interface()), true
 	}
 
-	// Tipe lain yang jarang → fallback printing
+	// Tipe pgtype lain → fallback string
 	return fmt.Sprint(v.Interface()), true
 }
 
-// ===== helpers =====
+// ------------------------ Helpers ------------------------
+
+func jsonFieldName(sf reflect.StructField, useJSONTag bool) (name string, skip bool) {
+	if !useJSONTag {
+		return sf.Name, false
+	}
+	tag := sf.Tag.Get("json")
+	if tag == "-" {
+		return "", true
+	}
+	if tag != "" {
+		parts := strings.Split(tag, ",")
+		n := parts[0]
+		if n != "" {
+			return n, false
+		}
+	}
+	// Fallback: snake_case dari nama field Go
+	return toSnakeCase(sf.Name), false
+}
+
+func joinPath(parent, child string) string {
+	if parent == "" {
+		return child
+	}
+	return parent + "." + child
+}
+
+// Normalisasi path: ganti [<angka>] → []
+func normalizeIndexes(p string) string {
+	var sb strings.Builder
+	runes := []rune(p)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '[' {
+			for i < len(runes) && runes[i] != ']' {
+				i++
+			}
+			sb.WriteString("[]")
+			continue
+		}
+		sb.WriteRune(runes[i])
+	}
+	return sb.String()
+}
+
+func replaceLastSegmentWithStar(p string) string {
+	segs := strings.Split(p, ".")
+	if len(segs) == 0 {
+		return p
+	}
+	segs[len(segs)-1] = "*"
+	return strings.Join(segs, ".")
+}
+
+func allSegmentsStar(p string) string {
+	segs := strings.Split(p, ".")
+	for i := range segs {
+		if segs[i] != "[]" {
+			segs[i] = "*"
+		}
+	}
+	return strings.Join(segs, ".")
+}
+
+func findRuleForPath(curPath string, rules map[string]StringifyRule) (StringifyRule, bool) {
+	if rules == nil {
+		return StringifyRule{}, false
+	}
+	if r, ok := rules[curPath]; ok {
+		return r, true
+	}
+	norm := normalizeIndexes(curPath)
+	if r, ok := rules[norm]; ok {
+		return r, true
+	}
+	if r, ok := rules[replaceLastSegmentWithStar(norm)]; ok {
+		return r, true
+	}
+	if r, ok := rules[allSegmentsStar(norm)]; ok {
+		return r, true
+	}
+	return StringifyRule{}, false
+}
+
+func toSnakeCase(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			prev := rune(s[i-1])
+			if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+				b.WriteByte('_')
+			}
+		}
+		b.WriteRune(r)
+	}
+	return strings.ToLower(b.String())
+}
+
+func marshalToIface(x any) any {
+	b, err := json.Marshal(x)
+	if err != nil {
+		return x
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return x
+	}
+	return out
+}
 
 func formatUUID(b []byte) string {
-	// b must be 16 bytes
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		binary.BigEndian.Uint32(b[0:4]),
 		binary.BigEndian.Uint16(b[4:6]),
@@ -617,20 +633,4 @@ func formatMAC(b []byte) string {
 		parts = append(parts, fmt.Sprintf("%02x", x))
 	}
 	return strings.Join(parts, ":")
-}
-
-// --- tambahkan helper ini ---
-func marshalToIface(x any) any {
-	// Gunakan JSON encoder bawaan untuk menghormati MarshalJSON/TextMarshaler,
-	// sekaligus menormalkan struktur (map key -> string, dsb.)
-	b, err := json.Marshal(x)
-	if err != nil {
-		// fallback keras: kalau benar-benar gagal, balikin nilai mentah
-		return x
-	}
-	var out any
-	if err := json.Unmarshal(b, &out); err != nil {
-		return x
-	}
-	return out
 }
