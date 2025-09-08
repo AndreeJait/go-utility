@@ -33,21 +33,21 @@ func convertAssign(dst, src reflect.Value) error {
 	// Unwrap pointer src
 	for src.Kind() == reflect.Ptr {
 		if src.IsNil() {
-			// src nil → dst zero
 			dst.Set(reflect.Zero(dst.Type()))
 			return nil
 		}
 		src = src.Elem()
 	}
 
-	// Jika dst pointer: handle NULL pgtype dulu agar bisa set nil
+	// Deteksi NULL pgtype paling awal (untuk semua dst)
+	if isPg, isNull := isPgtypeNullValue(src); isPg && isNull {
+		// dst pointer => nil, non-pointer => zero
+		dst.Set(reflect.Zero(dst.Type()))
+		return nil
+	}
+
+	// Jika dst pointer: alok dan lanjut ke elem
 	if dst.Kind() == reflect.Ptr {
-		if isPg, isNull := isPgtypeNullValue(src); isPg && isNull {
-			// src adalah pgtype NULL → dst pointer = nil
-			dst.Set(reflect.Zero(dst.Type()))
-			return nil
-		}
-		// alok lalu teruskan ke elem
 		if dst.IsNil() {
 			dst.Set(reflect.New(dst.Type().Elem()))
 		}
@@ -86,6 +86,13 @@ func convertAssign(dst, src reflect.Value) error {
 	// 4) Number ↔ Number (termasuk src string numeric)
 	if isNumber(dst.Kind()) && (isNumber(src.Kind()) || src.Kind() == reflect.String) {
 		return numberToNumber(dst, src)
+	}
+
+	// 4b) Khusus: numeric-like struct (mis. pgtype.Numeric) → number
+	if isNumber(dst.Kind()) && src.Kind() == reflect.Struct {
+		if handled, err := numericLikeToNumber(dst, src); handled {
+			return err
+		}
 	}
 
 	// 5) String ↔ []byte
@@ -154,20 +161,18 @@ func tryAssignViaPgtype(dst, src reflect.Value) (handled bool, err error) {
 		return false, nil
 	}
 
-	// Siapkan argumen:
-	// - jika dst pointer → langsung pakai dst (mis. *time.Time, *int64, *string, *[]byte)
-	// - jika dst non-pointer → buat *T sementara
+	// Siapkan argumen AssignTo:
 	var dstArg reflect.Value
 	if dst.Kind() == reflect.Ptr {
 		if dst.IsNil() {
 			dst.Set(reflect.New(dst.Type().Elem()))
 		}
-		dstArg = dst
+		dstArg = dst // langsung *T
 	} else {
-		dstArg = reflect.New(dst.Type())
+		dstArg = reflect.New(dst.Type()) // *T
 	}
 
-	// Panggil AssignTo
+	// Panggil AssignTo(&T)
 	out := m.Call([]reflect.Value{dstArg})
 	if len(out) == 1 && !out[0].IsNil() {
 		// error: coba AssignTo ke *string
@@ -175,7 +180,7 @@ func tryAssignViaPgtype(dst, src reflect.Value) (handled bool, err error) {
 		sPtr := reflect.New(reflect.TypeOf(s))
 		out2 := m.Call([]reflect.Value{sPtr})
 		if len(out2) == 1 && !out2[0].IsNil() {
-			// tetap error → biar aturan lain yang coba
+			// tetap error → biarkan aturan lain yang coba
 			return false, nil
 		}
 		tmp := sPtr.Elem() // string
@@ -233,6 +238,46 @@ func methodAssignTo(v reflect.Value) reflect.Value {
 		}
 	}
 	return reflect.Value{}
+}
+
+// ====================== Numeric-like fallback ======================
+
+// numericLikeToNumber: handle struct numeric (mis. pgtype.Numeric) → number
+// Strategi: ambil representasi string (via String() atau fmt.Sprint), lalu parse.
+func numericLikeToNumber(dst, src reflect.Value) (handled bool, err error) {
+	// Heuristik: nama tipe mengandung "Numeric"
+	tname := src.Type().String()
+	if !strings.Contains(strings.ToLower(tname), "numeric") {
+		return false, nil
+	}
+
+	// NULL? (Valid=false) → zero
+	if isPg, isNull := isPgtypeNullValue(src); isPg && isNull {
+		dst.Set(reflect.Zero(dst.Type()))
+		return true, nil
+	}
+
+	// Prefer method String()
+	var s string
+	if m := src.MethodByName("String"); m.IsValid() && m.Type().NumIn() == 0 && m.Type().NumOut() == 1 && m.Type().Out(0).Kind() == reflect.String {
+		s = m.Call(nil)[0].String()
+	} else {
+		s = fmt.Sprint(src.Interface())
+	}
+	s = strings.TrimSpace(s)
+
+	// NaN → zero (atau bisa kembalikan error jika ingin strict)
+	if strings.EqualFold(s, "NaN") || s == "" {
+		dst.Set(reflect.Zero(dst.Type()))
+		return true, nil
+	}
+
+	// parse ke float64 lalu map ke dst
+	f, perr := strconv.ParseFloat(s, 64)
+	if perr != nil {
+		return true, fmt.Errorf("parse numeric %q: %w", s, perr)
+	}
+	return true, numberToNumber(dst, reflect.ValueOf(f))
 }
 
 // ====================== Nullable unwrap (database/sql) ======================
