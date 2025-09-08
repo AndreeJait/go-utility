@@ -39,6 +39,14 @@ func convertAssign(dst, src reflect.Value) error {
 	}
 	// Jika dst pointer, alokasikan dan kerjakan elemennya
 	if dst.Kind() == reflect.Ptr {
+		// Jangan alokasikan dulu; cek apakah src adalah pgtype.* null
+		if src.Kind() == reflect.Struct {
+			if isPg, isNull := isPgtypeNull(src); isPg && isNull {
+				dst.Set(reflect.Zero(dst.Type())) // nil
+				return nil
+			}
+		}
+		// lanjut: baru alokasikan bila tidak null
 		if dst.IsNil() {
 			dst.Set(reflect.New(dst.Type().Elem()))
 		}
@@ -581,4 +589,16 @@ func fallbackConvert(dst, src reflect.Value) error {
 		}
 	}
 	return fmt.Errorf("no conversion rule from %s to %s", src.Type(), dst.Type())
+}
+
+// isPgtypeNull: kalau v struct punya field Valid bool dan false → null.
+func isPgtypeNull(v reflect.Value) (isPgtype bool, isNull bool) {
+	//t := v.Type()
+	if v.Kind() == reflect.Struct {
+		if f := v.FieldByName("Valid"); f.IsValid() && f.Kind() == reflect.Bool {
+			return true, !f.Bool()
+		}
+		// beberapa pgtype (array dsb.) mungkin bungkus pointer; coba elem addr juga
+	}
+	return false, false
 }
