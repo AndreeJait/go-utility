@@ -1,44 +1,55 @@
 package jwt
 
 import (
-	"encoding/json"
-	"github.com/AndreeJait/go-utility/errow"
-	"github.com/golang-jwt/jwt/v4"
+	jwtv4 "github.com/golang-jwt/jwt/v4"
+	"github.com/pkg/errors"
+	"time"
 )
 
-func CreateToken(param CreateTokenRequest) (string, error) {
-	token := jwt.NewWithClaims(
-		jwt.SigningMethodHS256, param.Claims)
-	tokenSigned, err := token.SignedString([]byte(param.SecretToken))
-	return tokenSigned, err
+// CreateToken signs the provided claims using HS256.
+func CreateToken(req CreateTokenRequest) (string, error) {
+	tok := jwtv4.NewWithClaims(jwtv4.SigningMethodHS256, req.Claims)
+	return tok.SignedString([]byte(req.SecretToken))
 }
 
-func ParseToken[T interface{}](tokenStr string, secret string) (resp T, err error) {
-	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-		if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errow.ErrInvalidSigningMethod
-		} else if method != jwt.SigningMethodHS256 {
-			return nil, errow.ErrInvalidSigningMethod
-		}
+// NewClaims is a helper to build correctly-initialized claims with TTL.
+func NewClaims[T any](data T, ttl time.Duration, issuer string, subject string) MyClaims[T] {
+	now := time.Now()
+	return MyClaims[T]{
+		Data: data,
+		RegisteredClaims: jwtv4.RegisteredClaims{
+			Issuer:    issuer,
+			Subject:   subject,
+			IssuedAt:  jwtv4.NewNumericDate(now),
+			ExpiresAt: jwtv4.NewNumericDate(now.Add(ttl)),
+			// (optional) NotBefore: now,
+		},
+	}
+}
 
+// ParseToken validates HS256 + expiry and returns your payload.
+// ParseToken validates HS256 + expiry and returns your payload.
+func ParseToken[T any](tokenStr string, secret string) (out T, err error) {
+	out, _, err = ParseTokenWithClaims[T](tokenStr, secret)
+	return out, err
+}
+
+func ParseTokenWithClaims[T any](tokenStr string, secret string) (out T, claims *MyClaims[T], err error) {
+	tok, err := jwtv4.ParseWithClaims(tokenStr, &MyClaims[T]{}, func(t *jwtv4.Token) (interface{}, error) {
+		// Explicitly check algorithm here instead of ValidMethods
+		if _, ok := t.Method.(*jwtv4.SigningMethodHMAC); !ok || t.Method.Alg() != jwtv4.SigningMethodHS256.Alg() {
+			return nil, ErrInvalidSigningMethod
+		}
 		return []byte(secret), nil
 	})
 	if err != nil {
-		return resp, err
-	}
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok || !token.Valid {
-		return resp, errow.ErrInvalidToken
+		return out, nil, err // includes "token is expired" when exp < now
 	}
 
-	if data, ok := claims["data"]; ok {
-		b, err := json.Marshal(data)
-		if err != nil {
-			return resp, err
-		}
-		if err := json.Unmarshal(b, &resp); err != nil {
-			return resp, err
-		}
+	c, ok := tok.Claims.(*MyClaims[T])
+	if !ok || !tok.Valid {
+		return out, nil, errors.New("invalid token")
 	}
-	return resp, nil
+
+	return c.Data, c, nil
 }

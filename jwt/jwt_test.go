@@ -41,7 +41,7 @@ func TestCreateToken(t *testing.T) {
 				param: CreateTokenRequest{
 					SecretToken: "andree",
 					Claims: MyClaims[string]{
-						Claims: jwt.RegisteredClaims{
+						RegisteredClaims: jwt.RegisteredClaims{
 							Issuer:    "testing",
 							ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Minute)),
 						},
@@ -86,7 +86,7 @@ func TestParseToken(t *testing.T) {
 				ID:       "123",
 				Username: "andree",
 			},
-			Claims: jwt.RegisteredClaims{
+			RegisteredClaims: jwt.RegisteredClaims{
 				Issuer:    "testing",
 				ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Minute)),
 			},
