@@ -38,7 +38,11 @@ func (e emailW) SentEmail(param SentEmailParam) error {
 	}
 
 	if strings.TrimSpace(param.Message) != "" {
-		mailer.SetHeader("text/html", param.Message)
+		var messageType = "text/plain"
+		if param.MessageType != "" {
+			messageType = param.MessageType
+		}
+		mailer.SetHeader(messageType, param.Message)
 	}
 
 	if strings.TrimSpace(param.Template) != "" {

@@ -14,6 +14,7 @@ type SentEmailParam struct {
 	To          []string               `json:"to"`
 	Cc          []SentEmailParamCC     `json:"cc"`
 	Message     string                 `json:"message"`
+	MessageType string                 `json:"message_type"`
 	Template    string                 `json:"template"`
 	Param       map[string]interface{} `json:"param"`
 	Attachments []SentEmailParamAttach `json:"attachments"`
