@@ -42,7 +42,7 @@ func (e emailW) SentEmail(param SentEmailParam) error {
 		if param.MessageType != "" {
 			messageType = param.MessageType
 		}
-		mailer.SetHeader(messageType, param.Message)
+		mailer.SetBody(messageType, param.Message)
 	}
 
 	if strings.TrimSpace(param.Template) != "" {
