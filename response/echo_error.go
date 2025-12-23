@@ -2,12 +2,13 @@ package response
 
 import (
 	"context"
-	"github.com/AndreeJait/go-utility/errow"
-	"github.com/AndreeJait/go-utility/loggerw"
-	"github.com/labstack/echo/v4"
 	"net/http"
 	"runtime/debug"
 	"sort"
+
+	"github.com/AndreeJait/go-utility/errow"
+	"github.com/AndreeJait/go-utility/loggerw"
+	"github.com/labstack/echo/v4"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 
@@ -58,7 +59,7 @@ func ErrInternalServerError(err error) ErrorResponse {
 	}
 
 	return ErrorResponse{
-		HTTPCode:  http.StatusUnauthorized,
+		HTTPCode:  http.StatusInternalServerError,
 		Message:   errorMessage,
 		ErrorCode: errorCode,
 		Internal:  err,
