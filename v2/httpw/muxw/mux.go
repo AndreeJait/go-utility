@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/AndreeJait/go-utility/v2/authw"
 	"github.com/AndreeJait/go-utility/v2/logw"
 	"github.com/AndreeJait/go-utility/v2/responsew"
 	"github.com/gorilla/mux"
@@ -18,7 +19,8 @@ type Config struct {
 	DebugMode     bool // Ditambahkan agar seragam dengan Echo dan Gin
 	EnableSwagger bool
 	// ErrorHandler allows overriding the default JSON error response mechanism.
-	ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
+	ErrorHandler  func(w http.ResponseWriter, r *http.Request, err error)
+	Authenticator authw.Authenticator // Optional: if set, AuthMiddleware is applied globally
 }
 
 // globalErrorHandler holds a reference to the custom handler for use within ApiWrap.
@@ -32,6 +34,10 @@ func New(cfg *Config) *mux.Router {
 
 	// Apply global logger middleware
 	r.Use(loggerMiddleware)
+
+	if cfg.Authenticator != nil {
+		r.Use(AuthMiddleware(cfg.Authenticator))
+	}
 
 	// Mount Swagger UI if enabled
 	if cfg.EnableSwagger {
