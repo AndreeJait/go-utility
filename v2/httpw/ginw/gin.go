@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/AndreeJait/go-utility/v2/authw"
 	"github.com/AndreeJait/go-utility/v2/logw"
 	"github.com/AndreeJait/go-utility/v2/responsew"
 	"github.com/gin-gonic/gin"
@@ -17,7 +18,8 @@ type Config struct {
 	EnableSwagger bool
 	// ErrorHandler allows overriding default error handling.
 	// It should return true if the error was fully handled to prevent default processing.
-	ErrorHandler func(c *gin.Context, err error) bool
+	ErrorHandler  func(c *gin.Context, err error) bool
+	Authenticator authw.Authenticator // Optional: if set, AuthMiddleware is applied globally
 }
 
 // New initializes a fresh Gin engine equipped with panic recovery,
@@ -29,6 +31,10 @@ func New(cfg *Config) *gin.Engine {
 
 	r := gin.New()
 	r.Use(gin.Recovery())
+
+	if cfg.Authenticator != nil {
+		r.Use(AuthMiddleware(cfg.Authenticator))
+	}
 
 	// Global Logger and Error Catcher Middleware
 	r.Use(func(c *gin.Context) {
