@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/AndreeJait/go-utility/v2/authw"
 	"github.com/AndreeJait/go-utility/v2/logw"
 	"github.com/AndreeJait/go-utility/v2/responsew"
 	"github.com/labstack/echo/v5"
@@ -17,6 +18,7 @@ type Config struct {
 	DebugMode     bool
 	EnableSwagger bool
 	ErrorHandler  echo.HTTPErrorHandler
+	Authenticator authw.Authenticator // Optional: if set, AuthMiddleware is applied globally
 }
 
 // New initializes a new Echo v5 instance equipped with panic recovery,
@@ -32,6 +34,10 @@ func New(cfg *Config) *echo.Echo {
 
 	e.Use(middleware.Recover())
 	e.Use(loggerMiddleware())
+
+	if cfg.Authenticator != nil {
+		e.Use(AuthMiddleware(cfg.Authenticator))
+	}
 
 	if cfg.EnableSwagger {
 		e.GET("/swagger/*", func(c *echo.Context) error {

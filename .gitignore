@@ -1,3 +1,6 @@
 vendor
 .gitignore
 .idea
+
+.claude
+CLAUDE.md
