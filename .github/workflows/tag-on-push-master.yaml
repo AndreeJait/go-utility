@@ -21,69 +21,49 @@ jobs:
       - name: Fetch tags
         run: git fetch --tags --force
 
-      # Prefer git tags over releases/latest (more reliable)
-      - name: Get latest tag (git)
+      - name: Get latest v2 tag
         id: get_latest_tag
         run: |
-          latest_tag=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          latest_tag=$(git tag --list 'v2/v2*' --sort=-v:refname | head -n 1)
           echo "latest_tag=$latest_tag" >> "$GITHUB_OUTPUT"
-          echo "Latest tag: ${latest_tag:-<none>}"
+          echo "Latest v2 tag: ${latest_tag:-<none>}"
 
-      - name: Calculate new tag (semver-ish)
+      - name: Calculate new v2 tag
         id: calculate_new_tag
         run: |
           latest_tag="${{ steps.get_latest_tag.outputs.latest_tag }}"
 
           if [ -z "$latest_tag" ]; then
-            new_tag="v0.0.1"
+            new_tag="v2/v2.0.0"
           else
-            version="${latest_tag#v}"
+            # Strip the v2/v2 prefix to get the semver part
+            version="${latest_tag#v2/v2}"
             IFS='.' read -r major minor patch <<< "$version"
 
             major=${major:-0}
             minor=${minor:-0}
             patch=${patch:-0}
 
-            # your logic: patch increments, rollover patch>=9 => minor++, minor>=10 => major++
-            if [ "$patch" -ge 9 ]; then
-              minor=$((minor + 1))
-              patch=0
-            else
-              patch=$((patch + 1))
-            fi
+            patch=$((patch + 1))
 
-            if [ "$minor" -ge 10 ]; then
-              major=$((major + 1))
-              minor=0
-            fi
-
-            new_tag="v$major.$minor.$patch"
+            new_tag="v2/v2.${major}.${minor}.${patch}"
           fi
 
           echo "new_tag=$new_tag" >> "$GITHUB_OUTPUT"
           echo "Calculated new tag: $new_tag"
 
-      # Keep bumping until we find a tag that doesn't exist on remote
       - name: Ensure tag is unique (remote)
         id: ensure_unique_tag
         run: |
           bump() {
             local tag="$1"
-            local version="${tag#v}"
+            local version="${tag#v2/v2}"
             IFS='.' read -r major minor patch <<< "$version"
             major=${major:-0}; minor=${minor:-0}; patch=${patch:-0}
 
-            if [ "$patch" -ge 9 ]; then
-              minor=$((minor + 1))
-              patch=0
-            else
-              patch=$((patch + 1))
-            fi
-            if [ "$minor" -ge 10 ]; then
-              major=$((major + 1))
-              minor=0
-            fi
-            echo "v$major.$minor.$patch"
+            patch=$((patch + 1))
+
+            echo "v2/v2.${major}.${minor}.${patch}"
           }
 
           candidate="${{ steps.calculate_new_tag.outputs.new_tag }}"
@@ -99,13 +79,13 @@ jobs:
       - name: Configure Git and Create Tag + update latest
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.norereply.github.com"
 
           new_tag="${{ steps.ensure_unique_tag.outputs.final_tag }}"
           git tag "$new_tag"
           git push origin "$new_tag"
 
-          # Update the "latest" tag to point to the newly created tag
+          # Update the "latest" tag to point to the same commit
           git tag -f latest "$new_tag"
           git push -f origin latest
 

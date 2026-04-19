@@ -1,6 +1,6 @@
 # go-utility
 
-A collection of production-ready Go utility packages for building backend services — config loading, database wrappers, message brokers, HTTP frameworks, authentication, logging, and more.
+A collection of production-ready Go utility packages for building backend services — config loading, database wrappers, message brokers, HTTP frameworks, authentication, WebSocket, logging, and more.
 
 ## Versions
 
@@ -17,7 +17,7 @@ A collection of production-ready Go utility packages for building backend servic
 
 ```bash
 # v2 (recommended)
-go get github.com/AndreeJait/go-utility/v2@latest
+go get github.com/AndreeJait/go-utility/v2@v2.0.0
 
 # v1 (legacy)
 go get github.com/AndreeJait/go-utility@latest
@@ -354,6 +354,80 @@ consumer.Consume(ctx, "topic", func(ctx context.Context, msg *brokerw.Message) e
 
 Same pattern for `nsqw`, `rabbitmqw`, `rocketmqw` sub-packages.
 
+### WebSocket
+
+**`websocketw`** — WebSocket Server and Client abstraction with event routing, room support, and auto-reconnect.
+
+```go
+import "github.com/AndreeJait/go-utility/v2/websocketw"
+import "github.com/AndreeJait/go-utility/v2/websocketw/gorillaw"
+```
+
+**Server** — Accept connections, broadcast, and handle events with rooms:
+
+```go
+ws := gorillaw.New(&gorillaw.Config{
+    Authenticator: jwtAuth,  // optional: auth during upgrade
+})
+
+// Handle incoming events
+ws.OnEvent("chat.message", func(ctx context.Context, msg *websocketw.Message) error {
+    ws.Broadcast(ctx, msg)
+    return nil
+})
+
+// Lifecycle hooks
+ws.OnConnect(func(ctx context.Context, client *websocketw.ClientInfo) error {
+    ws.JoinRoom(ctx, client.ID, "lobby")
+    return nil
+})
+ws.OnDisconnect(func(ctx context.Context, client *websocketw.ClientInfo) {
+    // cleanup
+})
+
+// Mount on any httpw router
+e.GET("/ws", echow.WSUpgradeHandler(ws))      // Echo
+r.GET("/ws", ginw.WSUpgradeHandler(ws))       // Gin
+r.HandleFunc("/ws", muxw.WSUpgradeHandler(ws)) // Mux
+
+// Room-based broadcasting
+ws.BroadcastToRoom(ctx, "lobby", &websocketw.Message{Event: "user.joined", Payload: payload})
+
+// Graceful shutdown
+gracefulw.Register("WebSocket", ws.Close)
+```
+
+**Client** — Connect to an external WebSocket server, listen for events, and publish:
+
+```go
+client := gorillaw.NewClient(&gorillaw.ClientConfig{
+    URL:                "wss://external-server.com/ws",
+    Header:             http.Header{"Authorization": {"Bearer token"}},
+    AutoReconnect:      true,
+    ReconnectInterval:  3 * time.Second,
+    MaxReconnectAttempts: 5,  // 0 = unlimited
+})
+
+// Listen for events (middleware chaining supported)
+client.OnEvent("order.updated", func(ctx context.Context, msg *websocketw.Message) error {
+    // handle event
+    return nil
+})
+
+// Lifecycle hooks
+client.OnConnect(func(ctx context.Context) error { return nil })
+client.OnDisconnect(func(ctx context.Context) {})
+
+// Connect blocks until context is canceled or fatal error
+go client.Connect(ctx)
+
+// Send messages to the server
+client.Send(ctx, &websocketw.Message{Event: "chat.message", Payload: payload})
+
+// Graceful shutdown
+gracefulw.Register("WSClient", client.Close)
+```
+
 ### Cloud Storage
 
 **`storagew`** — Storage abstraction with MinIO, AWS S3, GCS, and Huawei OBS.
@@ -509,6 +583,7 @@ Every major v2 capability is defined by an interface at the package root, with c
 brokerw.Producer / Consumer  →  kafkaw, nsqw, rabbitmqw, rocketmqw
 storagew.Storage             →  miniow, awsw, gcsw, huaweiw
 botw.Bot                     →  discordw, telegramw
+websocketw.Server / Client   →  gorillaw
 authw.Authenticator          →  jwt.go, basic.go
 authw.Cache                 →  localCache (localcachew), redisCache (go-redis)
 ```
@@ -576,10 +651,12 @@ cd v2 && go mod tidy && go mod vendor
 ## Release
 
 Pushing to `master` automatically triggers the CI workflow (`.github/workflows/tag-on-push-master.yaml`) which:
-1. Calculates the next semver tag (patch bump; patch >= 9 rolls to minor; minor >= 10 rolls to major)
+1. Calculates the next `v2/v2.x.y` semver tag for the v2 subdirectory module
 2. Creates and pushes the tag
 3. Generates a changelog from commit messages
 4. Creates a GitHub Release
+
+Tags follow Go's subdirectory module convention: `v2/v2.0.0`, `v2/v2.0.1`, etc. This allows `go get github.com/AndreeJait/go-utility/v2@v2.0.0` to resolve correctly via the Go module proxy.
 
 ## License
 
