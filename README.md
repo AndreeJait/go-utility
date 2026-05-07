@@ -462,6 +462,137 @@ bot.Listen(ctx, func(ctx context.Context, msg *botw.Message) error {
 })
 ```
 
+### MCP (Model Context Protocol)
+
+**`mcpw`** — MCP server and client wrapping the official Go SDK, with Streamable HTTP, Stdio, and SSE transports.
+
+```go
+import "github.com/AndreeJait/go-utility/v2/mcpw"
+```
+
+**Server** — Expose tools, resources, and prompts:
+
+```go
+srv := mcpw.NewServer(&mcpw.ServerConfig{Name: "my-server", Version: "1.0"})
+
+srv.AddTool(&mcpw.ToolInfo{Name: "greet", Description: "Say hello"}, func(ctx context.Context, params *mcpw.ToolCallParams) (*mcpw.ToolCallResult, error) {
+    return &mcpw.ToolCallResult{Content: []mcpw.Content{mcpw.TextContent{Text: "Hello!"}}}, nil
+})
+
+srv.AddResource(&mcpw.ResourceInfo{URI: "file:///data/config.json", Name: "Config"}, func(ctx context.Context, uri string) (*mcpw.ReadResourceResult, error) {
+    return &mcpw.ReadResourceResult{Contents: []mcpw.ResourceContent{{URI: uri, Text: `{"key": "value"}`}}}, nil
+})
+
+srv.AddPrompt(&mcpw.PromptInfo{Name: "greeting"}, func(ctx context.Context, name string, args map[string]string) (*mcpw.PromptResult, error) {
+    return &mcpw.PromptResult{Messages: []mcpw.PromptMessage{{Role: mcpw.RoleUser, Content: mcpw.TextContent{Text: "Hello " + args["name"]}}}}, nil
+})
+
+// Run with Stdio transport (CLI mode)
+srv.Run(ctx, mcpw.StdioTransport())
+
+// Or mount on an HTTP router (Streamable HTTP)
+handler := mcpw.NewStreamableHTTPHandler(func(r *http.Request) mcpw.Server { return srv }, nil)
+e.Any("/mcp", echow.MCPHandler(handler))
+```
+
+**Client** — Connect to MCP servers:
+
+```go
+cli := mcpw.NewClient(&mcpw.ClientConfig{Name: "my-client", Version: "1.0"})
+session, _ := cli.Connect(ctx, mcpw.StreamableClientTransport("http://localhost:8080/mcp"))
+defer session.Close()
+
+tools, _ := session.ListTools(ctx)
+result, _ := session.CallTool(ctx, &mcpw.ToolCallParams{Name: "greet", Arguments: map[string]any{"name": "you"}})
+```
+
+### LLM Provider Abstraction
+
+**`llmw`** — Unified interface for LLM chat completion and embedding providers. Multi-implementation package with sub-packages for each provider.
+
+```go
+import "github.com/AndreeJait/go-utility/v2/llmw"
+import "github.com/AndreeJait/go-utility/v2/llmw/openaiw"
+```
+
+```go
+// Create an OpenAI provider (also supports OpenAI-compatible APIs like Ollama, DeepSeek)
+llm, _ := openaiw.New(&openaiw.Config{APIKey: "sk-...", Model: "gpt-4o"})
+
+// Chat completion
+resp, _ := llm.Chat(ctx, []llmw.Message{
+    {Role: llmw.RoleSystem, Content: "You are a helpful assistant."},
+    {Role: llmw.RoleUser, Content: "Hello!"},
+}, llmw.WithTemperature(0.7))
+
+// With tool calling
+resp, _ := llm.Chat(ctx, messages,
+    llmw.WithTools(llmw.ToolInfo{
+        Name: "get_weather", Description: "Get weather",
+        Parameters: map[string]any{"type": "object", "properties": map[string]any{"location": map[string]any{"type": "string"}}},
+    }),
+)
+
+// Streaming
+ch, _ := llm.Stream(ctx, messages)
+for chunk := range ch {
+    fmt.Print(chunk.Content)
+}
+```
+
+### LangGraph-Style Graph Engine
+
+**`graphw`** — Stateful graph/agent orchestration framework (Go equivalent of LangGraph). Supports nodes, edges, cycles, conditional routing, parallel fan-out/fan-in, human-in-the-loop, checkpointing, and streaming.
+
+```go
+import "github.com/AndreeJait/go-utility/v2/graphw"
+```
+
+```go
+type AgentState struct {
+    Messages []string
+    Count   int
+}
+
+func myReducer(current, update AgentState) AgentState {
+    current.Messages = append(current.Messages, update.Messages...)
+    current.Count += update.Count
+    return current
+}
+
+// Build an agent loop graph: think → (use tool or done) → act → think → ...
+graph, _ := graphw.NewBuilder[AgentState](myReducer).
+    AddNode("think", thinkNode).
+    AddNode("act", toolNode).
+    AddEdge(graphw.START, "think").
+    AddConditionalEdge("think", func(ctx context.Context, s AgentState) (string, error) {
+        if s.NeedsTool {
+            return "tool", nil
+        }
+        return graphw.END, nil
+    }, nil).
+    AddEdge("act", "think").
+    Compile(graphw.WithRecursionLimit(25))
+
+// Execute
+result, _ := graph.Invoke(ctx, AgentState{})
+
+// Stream steps
+for step, err := range graph.Stream(ctx, AgentState{}) {
+    fmt.Printf("Step: node=%s, state=%+v\n", step.Node, step.State)
+}
+
+// Human-in-the-loop
+graph, _ = builder.Compile(graphw.WithCheckpointer(graphw.NewInMemoryCheckpointer()))
+_, err := graph.Invoke(ctx, state, graphw.WithInterruptBefore("human_review"))
+// ... human reviews and modifies state ...
+graph.UpdateState("thread-1", updatedState, "human")
+result, _ = graph.Invoke(ctx, AgentState{}, graphw.WithThreadID("thread-1"))
+
+// Mermaid diagram export
+fmt.Println(graphw.ExportMermaid(graph))
+```
+
 ### Scheduling & Concurrency
 
 **`cronw`** — Cron scheduler with middleware chaining.
@@ -584,6 +715,8 @@ brokerw.Producer / Consumer  →  kafkaw, nsqw, rabbitmqw, rocketmqw
 storagew.Storage             →  miniow, awsw, gcsw, huaweiw
 botw.Bot                     →  discordw, telegramw
 websocketw.Server / Client   →  gorillaw
+llmw.LLM / Embedder          →  openaiw (and future providers)
+graphw.Checkpointer          →  InMemoryCheckpointer (built-in), future backends
 authw.Authenticator          →  jwt.go, basic.go
 authw.Cache                 →  localCache (localcachew), redisCache (go-redis)
 ```
@@ -591,9 +724,11 @@ authw.Cache                 →  localCache (localcachew), redisCache (go-redis)
 Single-implementation packages use the `interface + unexported struct` pattern:
 
 ```
-jwtw.JWT       →  jwtManager
-emailw.Emailer →  smtpEmailer
-cronw.Scheduler →  cronScheduler
+jwtw.JWT            →  jwtManager
+emailw.Emailer      →  smtpEmailer
+cronw.Scheduler      →  cronScheduler
+mcpw.Server/Client   →  mcpServer/mcpClient (wraps official MCP Go SDK)
+graphw.Graph[S]      →  compiledGraph[S] (BSP/Pregel engine with generics)
 ```
 
 ### Error Pipeline
