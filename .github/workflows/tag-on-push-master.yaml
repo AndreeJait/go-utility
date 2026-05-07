@@ -36,8 +36,8 @@ jobs:
           if [ -z "$latest_tag" ]; then
             new_tag="v2/v2.0.0"
           else
-            # Strip the v2/v2 prefix to get the semver part
-            version="${latest_tag#v2/v2}"
+            # Strip the v2/v2. prefix to get the semver part
+            version="${latest_tag#v2/v2.}"
             IFS='.' read -r major minor patch <<< "$version"
 
             major=${major:-0}
@@ -57,7 +57,7 @@ jobs:
         run: |
           bump() {
             local tag="$1"
-            local version="${tag#v2/v2}"
+            local version="${tag#v2/v2.}"
             IFS='.' read -r major minor patch <<< "$version"
             major=${major:-0}; minor=${minor:-0}; patch=${patch:-0}
 
