@@ -314,6 +314,179 @@ func (g *compiledGraph[S]) UpdateState(threadID string, values S, asNode string)
 	return g.checkpointer.Put(ctx, newCheckpoint)
 }
 
+// Step executes exactly one superstep and returns the result.
+// On the first call with a given threadID, it resolves the START edges and
+// executes those nodes. On subsequent calls, it reads the checkpoint to
+// determine which nodes to execute next.
+func (g *compiledGraph[S]) Step(ctx context.Context, state S, opts ...RunOption) (*StepResult[S], error) {
+	rc := &runConfig{}
+	for _, opt := range opts {
+		opt(rc)
+	}
+
+	if g.checkpointer == nil {
+		return nil, ErrStepRequiresCheckpointer
+	}
+	if rc.threadID == "" {
+		return nil, ErrStepRequiresThreadID
+	}
+
+	intBefore := g.mergeInterruptSets(g.intBefore, rc.interruptBefore)
+	intAfter := g.mergeInterruptSets(g.intAfter, rc.interruptAfter)
+
+	// Restore from checkpoint or use provided state
+	currentState := state
+	nextNodes := g.resolveNextNodes(START)
+	step := 0
+
+	if cp, err := g.checkpointer.Get(ctx, rc.threadID, ""); err == nil && cp != nil {
+		var restored S
+		if err := json.Unmarshal(cp.State, &restored); err == nil {
+			currentState = g.reducer(restored, state)
+		}
+		if len(cp.Next) > 0 {
+			nextNodes = cp.Next
+		}
+		// Restore step number from checkpoint metadata
+		if cp.Metadata != nil {
+			if s, ok := cp.Metadata["step"].(float64); ok {
+				step = int(s)
+			}
+		}
+	}
+
+	// Check if done
+	if len(nextNodes) == 0 || containsEnd(nextNodes) {
+		return &StepResult[S]{
+			State:  currentState,
+			Next:   nil,
+			IsDone: true,
+		}, nil
+	}
+
+	// Check interrupt-before
+	for _, node := range nextNodes {
+		if intBefore[node] {
+			logw.CtxInfof(ctx, "graphw: step interrupt before node %q (step %d)", node, step)
+			if err := g.saveCheckpoint(ctx, rc.threadID, currentState, nextNodes, step); err != nil {
+				logw.CtxErrorf(ctx, "graphw: failed to save checkpoint: %v", err)
+			}
+			return nil, &InterruptError{Node: node, Step: step}
+		}
+	}
+
+	// Execute all nodes in parallel
+	results, err := g.executeNodes(ctx, nextNodes, currentState)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply reducers in deterministic order
+	updates := g.sortResults(nextNodes, results)
+	for _, r := range updates {
+		currentState = g.reducer(currentState, r.State)
+	}
+
+	// Resolve next nodes
+	resolvedNext, sends := g.resolveNextNodesFromResults(nextNodes, results, currentState, ctx)
+
+	// Check interrupt-after
+	for _, node := range nextNodes {
+		if intAfter[node] {
+			logw.CtxInfof(ctx, "graphw: step interrupt after node %q (step %d)", node, step)
+			if err := g.saveCheckpoint(ctx, rc.threadID, currentState, resolvedNext, step+1); err != nil {
+				logw.CtxErrorf(ctx, "graphw: failed to save checkpoint: %v", err)
+			}
+			return nil, &InterruptError{Node: node, Step: step}
+		}
+	}
+
+	// Process Sends (dynamic fan-out)
+	if len(sends) > 0 {
+		sendResults, err := g.executeSends(ctx, sends, currentState)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range sendResults {
+			currentState = g.reducer(currentState, r.State)
+		}
+	}
+
+	// Save checkpoint
+	if err := g.saveCheckpoint(ctx, rc.threadID, currentState, resolvedNext, step+1); err != nil {
+		logw.CtxErrorf(ctx, "graphw: failed to save checkpoint: %v", err)
+	}
+
+	isDone := len(resolvedNext) == 0 || containsEnd(resolvedNext)
+
+	return &StepResult[S]{
+		Nodes:   nextNodes,
+		State:   currentState,
+		Updates: updates,
+		Next:    resolvedNext,
+		IsDone:  isDone,
+	}, nil
+}
+
+// Redirect changes the next nodes to execute for a given thread.
+// It creates a new checkpoint with the current state but a modified Next field.
+func (g *compiledGraph[S]) Redirect(threadID string, nextNodes []string) error {
+	if g.checkpointer == nil {
+		return fmt.Errorf("graphw: no checkpointer configured")
+	}
+
+	ctx := context.Background()
+	cp, err := g.checkpointer.Get(ctx, threadID, "")
+	if err != nil {
+		return fmt.Errorf("graphw: get checkpoint for redirect: %w", err)
+	}
+	if cp == nil {
+		return fmt.Errorf("graphw: no checkpoint found for thread %q", threadID)
+	}
+
+	newCheckpoint := Checkpoint{
+		ID:        generateCheckpointID(),
+		ThreadID:  threadID,
+		ParentID:  cp.ID,
+		State:     cp.State,
+		Next:      nextNodes,
+		CreatedAt: time.Now(),
+		Metadata:  map[string]any{"redirect": true},
+	}
+
+	return g.checkpointer.Put(ctx, newCheckpoint)
+}
+
+// RevertTo time-travels to a previous checkpoint.
+// It loads the target checkpoint's state and Next, then saves a new
+// checkpoint forking from that point.
+func (g *compiledGraph[S]) RevertTo(threadID, checkpointID string) error {
+	if g.checkpointer == nil {
+		return fmt.Errorf("graphw: no checkpointer configured")
+	}
+
+	ctx := context.Background()
+	cp, err := g.checkpointer.Get(ctx, threadID, checkpointID)
+	if err != nil {
+		return fmt.Errorf("graphw: get checkpoint for revert: %w", err)
+	}
+	if cp == nil {
+		return fmt.Errorf("graphw: checkpoint %q not found for thread %q", checkpointID, threadID)
+	}
+
+	newCheckpoint := Checkpoint{
+		ID:        generateCheckpointID(),
+		ThreadID:  threadID,
+		ParentID:  cp.ID,
+		State:     cp.State,
+		Next:      cp.Next,
+		CreatedAt: time.Now(),
+		Metadata:  map[string]any{"reverted_from": cp.ID},
+	}
+
+	return g.checkpointer.Put(ctx, newCheckpoint)
+}
+
 // --- Internal Methods ---
 
 // executeNodes executes all given nodes in parallel and returns their results.

@@ -34,6 +34,12 @@ var (
 
 	// ErrNoNodes indicates the graph has no nodes.
 	ErrNoNodes = errors.New("graphw: graph has no nodes")
+
+	// ErrStepRequiresCheckpointer indicates Step was called without a checkpointer.
+	ErrStepRequiresCheckpointer = errors.New("graphw: Step requires a checkpointer")
+
+	// ErrStepRequiresThreadID indicates Step was called without a threadID.
+	ErrStepRequiresThreadID = errors.New("graphw: Step requires a threadID option")
 )
 
 // --- Core Function Types ---
@@ -102,6 +108,23 @@ type Step[S any] struct {
 	Updates []NodeResult[S]
 }
 
+// StepResult contains the output of a single superstep execution.
+// It is returned by the Step method for distributed/async execution patterns
+// where each superstep is handled separately (e.g., via a message queue).
+type StepResult[S any] struct {
+	// Nodes contains the names of all nodes that executed in this superstep.
+	Nodes []string
+	// State is the graph state after the reducer merge.
+	State S
+	// Updates contains the state deltas from the nodes that executed.
+	Updates []NodeResult[S]
+	// Next contains the names of nodes scheduled to execute next.
+	// Empty or contains only END means the graph is done.
+	Next []string
+	// IsDone is true when the graph has reached END or has no more nodes to execute.
+	IsDone bool
+}
+
 // --- Graph Interface ---
 
 // Graph is the compiled, executable stateful graph.
@@ -122,6 +145,26 @@ type Graph[S any] interface {
 	// modifies the state before resuming execution.
 	// Requires a Checkpointer to be configured.
 	UpdateState(threadID string, values S, asNode string) error
+
+	// Step executes exactly one superstep and returns the result.
+	// On the first call with a given threadID, it resolves the START edges and
+	// executes those nodes. On subsequent calls, it reads the checkpoint to
+	// determine which nodes to execute next.
+	// Requires a Checkpointer to be configured and a threadID via WithThreadID.
+	Step(ctx context.Context, state S, opts ...RunOption) (*StepResult[S], error)
+
+	// Redirect changes the next nodes to execute for a given thread.
+	// It creates a new checkpoint with the current state but modified Next field.
+	// Useful for dynamically altering execution flow (e.g., from a State API).
+	// Requires a Checkpointer to be configured.
+	Redirect(threadID string, nextNodes []string) error
+
+	// RevertTo time-travels to a previous checkpoint.
+	// It loads the target checkpoint's state and Next, then saves a new
+	// checkpoint forking from that point. The graph resumes from the reverted
+	// state on the next Step call.
+	// Requires a Checkpointer to be configured.
+	RevertTo(threadID, checkpointID string) error
 }
 
 // StateSnapshot captures the state at a point in time for checkpointing.
