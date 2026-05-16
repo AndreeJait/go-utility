@@ -3,11 +3,23 @@ package nsqw
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/AndreeJait/go-utility/v2/brokerw"
 	"github.com/AndreeJait/go-utility/v2/logw"
 	"github.com/nsqio/go-nsq"
 )
+
+// ProducerConfig holds configuration for the NSQ producer with retry support.
+type ProducerConfig struct {
+	// NSQdAddr is the address of the nsqd instance (e.g., "127.0.0.1:4150").
+	NSQdAddr string
+	// MaxRetries is the maximum number of connection attempts. 0 means try once (no retry). Default: 0.
+	MaxRetries int
+	// RetryDelay is the initial delay between retries. Each subsequent retry doubles the delay. Default: 1s.
+	RetryDelay time.Duration
+}
 
 // nsqProducer implements brokerw.Producer for NSQ.
 type nsqProducer struct {
@@ -17,11 +29,51 @@ type nsqProducer struct {
 // NewProducer initializes an NSQ producer.
 // The address should point to a specific nsqd instance (e.g., "127.0.0.1:4150").
 func NewProducer(nsqdAddr string) (brokerw.Producer, error) {
-	config := nsq.NewConfig()
-	p, err := nsq.NewProducer(nsqdAddr, config)
-	if err != nil {
-		return nil, err
+	return NewProducerWithRetry(ProducerConfig{
+		NSQdAddr:   nsqdAddr,
+		MaxRetries: 0,
+	})
+}
+
+// NewProducerWithRetry initializes an NSQ producer with retry support.
+// If MaxRetries > 0, connection failures will be retried with exponential backoff.
+func NewProducerWithRetry(cfg ProducerConfig) (brokerw.Producer, error) {
+	if cfg.NSQdAddr == "" {
+		return nil, fmt.Errorf("nsqw: nsqd address is required")
 	}
+	if cfg.RetryDelay == 0 {
+		cfg.RetryDelay = 1 * time.Second
+	}
+
+	config := nsq.NewConfig()
+	p, err := nsq.NewProducer(cfg.NSQdAddr, config)
+	if err != nil {
+		return nil, fmt.Errorf("nsqw: failed to create producer: %w", err)
+	}
+
+	// Attempt initial connection with retries
+	attempts := cfg.MaxRetries + 1 // +1 for the initial attempt
+	delay := cfg.RetryDelay
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err := p.Ping()
+		if err == nil {
+			logw.Infof("nsqw: producer connected to %s", cfg.NSQdAddr)
+			return &nsqProducer{producer: p}, nil
+		}
+
+		if attempt < attempts {
+			logw.Warningf("nsqw: producer connection attempt %d/%d to %s failed: %v, retrying in %v", attempt, attempts, cfg.NSQdAddr, err, delay)
+			time.Sleep(delay)
+			delay *= 2 // exponential backoff
+		} else {
+			// Last attempt failed, return the producer anyway — NSQ will
+			// attempt reconnection on publish. This matches go-nsq behavior.
+			logw.Warningf("nsqw: producer could not ping %s after %d attempts: %v (will retry on publish)", cfg.NSQdAddr, attempts, err)
+			return &nsqProducer{producer: p}, nil
+		}
+	}
+
 	return &nsqProducer{producer: p}, nil
 }
 
