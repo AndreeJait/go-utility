@@ -3,6 +3,7 @@ module github.com/AndreeJait/go-utility/v2
 go 1.25.0
 
 require (
+	cloud.google.com/go/auth v0.18.1
 	cloud.google.com/go/storage v1.60.0
 	github.com/apache/rocketmq-client-go/v2 v2.1.2
 	github.com/aws/aws-sdk-go-v2 v1.41.3
@@ -46,7 +47,6 @@ require (
 require (
 	cel.dev/expr v0.24.0 // indirect
 	cloud.google.com/go v0.123.0 // indirect
-	cloud.google.com/go/auth v0.18.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.5.3 // indirect

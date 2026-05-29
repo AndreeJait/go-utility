@@ -99,6 +99,7 @@ func (p *nsqProducer) Close() error {
 // nsqConsumer implements brokerw.Consumer for NSQ.
 type nsqConsumer struct {
 	lookupdAddrs []string
+	nsqdAddr     string
 	channel      string
 	consumers    []*nsq.Consumer
 }
@@ -110,6 +111,17 @@ func NewConsumer(lookupdAddrs []string, channel string) brokerw.Consumer {
 	return &nsqConsumer{
 		lookupdAddrs: lookupdAddrs,
 		channel:      channel,
+	}
+}
+
+// NewConsumerDirect initializes an NSQ consumer that connects directly to nsqd.
+// This is useful when nsqlookupd broadcast address isn't resolvable from the client.
+// The 'channel' acts as a consumer group; every consumer in the same channel
+// shares the message load for a topic.
+func NewConsumerDirect(nsqdAddr, channel string) brokerw.Consumer {
+	return &nsqConsumer{
+		nsqdAddr: nsqdAddr,
+		channel:  channel,
 	}
 }
 
@@ -143,9 +155,19 @@ func (c *nsqConsumer) Consume(ctx context.Context, topic string, handlers ...bro
 		return nil // Returning nil tells NSQ to Ack the message
 	}))
 
-	// Connect to the lookup daemons to discover nsqd nodes dynamically
-	if err := q.ConnectToNSQLookupds(c.lookupdAddrs); err != nil {
-		return err
+	// Connect either directly to nsqd or via lookupd
+	if c.nsqdAddr != "" {
+		// Direct connection to nsqd
+		if err := q.ConnectToNSQD(c.nsqdAddr); err != nil {
+			return err
+		}
+		logw.Infof("nsqw: connected directly to nsqd %s", c.nsqdAddr)
+	} else if len(c.lookupdAddrs) > 0 {
+		// Connect to lookupd for dynamic discovery
+		if err := q.ConnectToNSQLookupds(c.lookupdAddrs); err != nil {
+			return err
+		}
+		logw.Infof("nsqw: querying nsqlookupd %v", c.lookupdAddrs)
 	}
 
 	c.consumers = append(c.consumers, q)
