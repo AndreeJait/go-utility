@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/AndreeJait/go-utility/v2/llmw"
 	"github.com/AndreeJait/go-utility/v2/logw"
@@ -27,6 +28,10 @@ type Config struct {
 	BaseURL string
 	// OrgID is the optional organization ID.
 	OrgID string
+	// HTTPClient is an optional custom HTTP client. Use this to inject authenticated
+	// clients (e.g., gcpw.AuthenticatedHTTPClient for GCP Cloud Run). If nil, the
+	// SDK's default client is used.
+	HTTPClient *http.Client
 }
 
 // New creates a new OpenAI LLM provider.
@@ -45,6 +50,9 @@ func New(cfg *Config) (llmw.LLM, error) {
 	}
 	if cfg.OrgID != "" {
 		opts = append(opts, option.WithOrganization(cfg.OrgID))
+	}
+	if cfg.HTTPClient != nil {
+		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
 	}
 
 	client := openai.NewClient(opts...)
