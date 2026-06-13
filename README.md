@@ -649,6 +649,144 @@ sm.On("approve").From("review").To("approved")
 newState, _ := sm.Fire(ctx, "submit", "draft", entity)
 ```
 
+### Cloud Provider Wrappers
+
+**`gcpw`** — GCP identity token authentication.
+
+```go
+import "github.com/AndreeJait/go-utility/v2/gcpw"
+
+// Production: Application Default Credentials / metadata server / service account
+provider, _ := gcpw.NewIdentityTokenProvider(ctx, &gcpw.IdentityConfig{
+    Audience: "https://my-service-abc123.run.app",
+})
+
+// Local development: authenticated gcloud CLI
+provider := gcpw.NewGCloudTokenProvider(&gcpw.GCloudConfig{DebugMode: true})
+
+// Attach Authorization header to outbound requests automatically
+client := gcpw.AuthenticatedHTTPClient(provider, nil)
+resp, _ := client.Get("https://my-service-abc123.run.app/api/")
+```
+
+**`cloudflarw`** — Cloudflare API v4 wrapper (zones, DNS records, tunnels, Zero Trust Access).
+
+```go
+import "github.com/AndreeJait/go-utility/v2/cloudflarw"
+import "github.com/AndreeJait/go-utility/v2/cloudflarw/apiv4w"
+
+cf, _ := apiv4w.New(&apiv4w.Config{APIToken: "your-api-token"})
+
+zones, _, _ := cf.ListZones(ctx)
+rec, _, _ := cf.CreateDNSRecord(ctx, zoneID, &cloudflarw.DNSRecord{
+    Type: "A", Name: "api.example.com", Content: "1.2.3.4", Proxied: true,
+})
+```
+
+**`tuyaw`** — Tuya IoT Cloud API v1 wrapper (devices, commands, status).
+
+```go
+import "github.com/AndreeJait/go-utility/v2/tuyaw"
+import "github.com/AndreeJait/go-utility/v2/tuyaw/apiv1w"
+
+client, _ := apiv1w.New(&apiv1w.Config{
+    AccessID:  "your-access-id",
+    AccessKey: "your-access-key",
+    Region:    "sg",
+})
+
+device, _ := client.GetDevice(ctx, "device-id")
+_ = client.SendCommands(ctx, "device-id", []tuyaw.DeviceCommand{
+    {Code: "switch_1", Value: true},
+})
+```
+
+**`tailscalew`** — Tailscale HTTP API wrapper (devices and auth keys).
+
+```go
+import "github.com/AndreeJait/go-utility/v2/tailscalew"
+
+client, _ := tailscalew.New(&tailscalew.Config{
+    Tailnet: "example.github",
+    APIKey:  "tskey-api-...",
+})
+
+devices, _ := client.ListDevices(ctx)
+key, _ := client.CreateAuthKey(ctx, tailscalew.CreateAuthKeyRequest{
+    Description: "ci runner",
+    Expiry:      time.Hour,
+    Ephemeral:   true,
+    Tags:        []string{"tag:ci"},
+})
+_ = client.AuthorizeDevice(ctx, "node-id")
+_ = client.UpdateDeviceKeyExpiry(ctx, "node-id", true) // disable expiry
+_ = client.ExpireDevice(ctx, "node-id")                // kick immediately
+_ = client.DeleteAuthKey(ctx, key.ID)
+```
+
+**`tailscalew/tsnetw`** — Embedded Tailscale node/VPN wrapper (join a tailnet, dial, listen, identify peers).
+
+```go
+import "github.com/AndreeJait/go-utility/v2/tailscalew/tsnetw"
+
+vpn, _ := tsnetw.New(&tsnetw.Config{
+    Hostname: "merchant-123",
+    AuthKey:  "tskey-auth-...",
+    Dir:      "/var/lib/myapp/tailscale/merchant-123",
+    AdvertiseTags: []string{"tag:agent"},
+})
+
+status, _ := vpn.Start(ctx)
+listener, _ := vpn.Listen("tcp", ":8080")
+http.Serve(listener, handler)
+```
+
+### Container Runtime Wrappers
+
+**`containerdw`** — containerd v2 client wrapper for image, container, and task lifecycle.
+
+```go
+import "github.com/AndreeJait/go-utility/v2/containerdw"
+
+client, _ := containerdw.New(&containerdw.Config{
+    Address:   "/run/containerd/containerd.sock",
+    Namespace: "default",
+})
+defer client.Close()
+
+version, _ := client.Version(ctx)
+
+image, _ := client.PullImage(ctx, "docker.io/library/nginx:latest")
+container, _ := client.CreateContainer(ctx, "web-1", image.Name)
+task, _ := client.StartContainer(ctx, "web-1")
+
+_ = client.StopContainer(ctx, "web-1", "SIGTERM", 10*time.Second)
+_ = client.DeleteContainer(ctx, "web-1")
+
+// Prune stopped containers and unused images
+pruned, _ := client.PruneContainers(ctx)
+prunedImages, _ := client.PruneImages(ctx)
+
+// Network management requires nerdctl installed
+_ = client.CreateNetwork(ctx, "backend", "bridge", containerdw.NetworkOptions{})
+networks, _ := client.ListNetworks(ctx)
+_ = client.RemoveNetwork(ctx, "backend")
+```
+
+### Generic Value Helpers
+
+**`valuew`** — Generic value helpers: coalescing, pointer utilities, slice/map helpers.
+
+```go
+import "github.com/AndreeJait/go-utility/v2/valuew"
+
+valuew.Coalesce(cfg.Host, "localhost")     // first non-zero value
+valuew.Ptr(42)                              // *int
+valuew.Deref(ptr, "fallback")              // safe dereference
+valuew.Contains([]string{"a", "b"}, "a")    // true
+valuew.MapKeys(map[string]int{"x": 1})      // []string{"x"}
+```
+
 ### Infrastructure
 
 **`gracefulw`** — Graceful shutdown with OS signal handling.
@@ -718,7 +856,13 @@ websocketw.Server / Client   →  gorillaw
 llmw.LLM / Embedder          →  openaiw (and future providers)
 graphw.Checkpointer          →  InMemoryCheckpointer (built-in), future backends
 authw.Authenticator          →  jwt.go, basic.go
-authw.Cache                 →  localCache (localcachew), redisCache (go-redis)
+authw.Cache                  →  localCache (localcachew), redisCache (go-redis)
+cloudflarw.Cloudflare        →  apiv4w
+tuyaw.Tuya                   →  apiv1w
+tailscalew.Tailscale         →  tailscale.com/client/tailscale/v2 (official client)
+tsnetw.VPN                   →  tailscale.com/tsnet (embedded node)
+gcpw.TokenProvider           →  NewGCloudTokenProvider, NewIdentityTokenProvider
+containerdw.Containerd       →  github.com/containerd/containerd/v2/client (official client)
 ```
 
 Single-implementation packages use the `interface + unexported struct` pattern:
@@ -729,6 +873,10 @@ emailw.Emailer      →  smtpEmailer
 cronw.Scheduler      →  cronScheduler
 mcpw.Server/Client   →  mcpServer/mcpClient (wraps official MCP Go SDK)
 graphw.Graph[S]      →  compiledGraph[S] (BSP/Pregel engine with generics)
+tailscalew           →  tailscaleManager (wraps official Tailscale HTTP client)
+tsnetw               →  tsnetVPN (wraps embedded tsnet.Server)
+valuew               →  generic helpers (Coalesce, Ptr, Deref, Contains, MapKeys, etc.)
+containerdw          →  containerdManager (wraps official containerd v2 client)
 ```
 
 ### Error Pipeline
