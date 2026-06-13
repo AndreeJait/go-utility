@@ -38,7 +38,7 @@ func TestSqlxTransaction_Commit(t *testing.T) {
 	ctx := context.Background()
 
 	err := Transaction(ctx, db, func(txCtx context.Context) error {
-		repoDB := GetDB(txCtx, db)
+		repoDB := GetDB(txCtx, db, false)
 		_, err := repoDB.ExecContext(txCtx, "INSERT INTO users (id, name) VALUES (?, ?)", 1, "Alice")
 		return err
 	})
@@ -61,7 +61,7 @@ func TestSqlxTransaction_Rollback(t *testing.T) {
 	ctx := context.Background()
 
 	_ = Transaction(ctx, db, func(txCtx context.Context) error {
-		repoDB := GetDB(txCtx, db)
+		repoDB := GetDB(txCtx, db, false)
 		_, _ = repoDB.ExecContext(txCtx, "INSERT INTO users (id, name) VALUES (?, ?)", 2, "Bob")
 		return errors.New("simulated error")
 	})
