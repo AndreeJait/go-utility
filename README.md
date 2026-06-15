@@ -773,6 +773,30 @@ networks, _ := client.ListNetworks(ctx)
 _ = client.RemoveNetwork(ctx, "backend")
 ```
 
+### Two-Factor Authentication
+
+**`twofaw`** — TOTP-based two-factor authentication helper for enabling 2FA after login.
+
+```go
+import "github.com/AndreeJait/go-utility/v2/twofaw"
+
+mfa := twofaw.New(&twofaw.Config{Issuer: "MyApp", Digits: 6, Period: 30})
+
+// After primary login, generate a secret and show a QR code for setup
+key, _ := mfa.GenerateKey(ctx, "user@example.com", "MyApp")
+qrPNG, _ := mfa.GenerateQRCode(ctx, key, 256)
+
+// Store key.Secret and hashed recovery codes with the user record
+plainCodes, hashedCodes, _ := mfa.GenerateRecoveryCodes(ctx, 8)
+
+// On the second login step, validate the TOTP code
+if !mfa.ValidateCode(ctx, key.Secret, userCode, 1) {
+    // check recovery code
+    ok, idx := mfa.ValidateRecoveryCode(ctx, userCode, hashedCodes)
+    // if ok, invalidate hashedCodes[idx]
+}
+```
+
 ### Generic Value Helpers
 
 **`valuew`** — Generic value helpers: coalescing, pointer utilities, slice/map helpers.
@@ -877,6 +901,7 @@ tailscalew           →  tailscaleManager (wraps official Tailscale HTTP client
 tsnetw               →  tsnetVPN (wraps embedded tsnet.Server)
 valuew               →  generic helpers (Coalesce, Ptr, Deref, Contains, MapKeys, etc.)
 containerdw          →  containerdManager (wraps official containerd v2 client)
+twofaw               →  totpManager (TOTP secrets, QR codes, validation, recovery codes)
 ```
 
 ### Error Pipeline
